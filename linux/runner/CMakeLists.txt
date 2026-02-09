@@ -1,26 +1,31 @@
 cmake_minimum_required(VERSION 3.13)
 project(runner LANGUAGES CXX)
 
-# Define the application target. To change its name, change BINARY_NAME in the
-# top-level CMakeLists.txt, not the value here, or `flutter run` will no longer
-# work.
-#
-# Any new source files that you add to the application should be added here.
+# --- NUCLEAR FIX START ---
+# 1. Force PkgConfig to find GTK and its include directories
+find_package(PkgConfig REQUIRED)
+pkg_check_modules(GTK REQUIRED gtk+-3.0)
+
+# 2. Print the found paths to the terminal (for debugging)
+message(STATUS "GTK Include Dirs: ${GTK_INCLUDE_DIRS}")
+# --- NUCLEAR FIX END ---
+
 add_executable(${BINARY_NAME}
   "main.cc"
   "my_application.cc"
   "${FLUTTER_MANAGED_DIR}/generated_plugin_registrant.cc"
 )
 
-# Apply the standard set of build settings. This can be removed for applications
-# that need different build settings.
 apply_standard_settings(${BINARY_NAME})
 
-# Add preprocessor definitions for the application ID.
+# 3. Add the compiler flags (Definitions)
+target_compile_options(${BINARY_NAME} PRIVATE ${GTK_CFLAGS_OTHER})
+add_definitions(${GTK_CFLAGS_OTHER})
 add_definitions(-DAPPLICATION_ID="${APPLICATION_ID}")
 
-# Add dependency libraries. Add any application-specific dependencies here.
-target_link_libraries(${BINARY_NAME} PRIVATE flutter)
-target_link_libraries(${BINARY_NAME} PRIVATE PkgConfig::GTK)
+# 4. CRITICAL: Explicitly add the include directories found in step 1
+target_include_directories(${BINARY_NAME} PRIVATE "${CMAKE_SOURCE_DIR}" ${GTK_INCLUDE_DIRS})
 
-target_include_directories(${BINARY_NAME} PRIVATE "${CMAKE_SOURCE_DIR}")
+# 5. Link libraries
+target_link_libraries(${BINARY_NAME} PRIVATE flutter)
+target_link_libraries(${BINARY_NAME} PRIVATE ${GTK_LIBRARIES})

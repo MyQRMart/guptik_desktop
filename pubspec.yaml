@@ -9,20 +9,21 @@ environment:
 dependencies:
   flutter:
     sdk: flutter
-  supabase_flutter: ^2.0.0
   google_fonts: ^6.1.0
-  lucide_icons: ^0.3.0 # For clean, technical icons
-  glassmorphism: ^3.0.0 # For that high-tech look
-  file_picker: ^6.0.0
-  qr_flutter: ^4.1.0 # For Trust Me pairing
-  window_manager: ^0.3.0 # To control window size/frame
-  shelf: ^1.4.0              # For the internal Dart Server
-  shelf_router: ^1.1.0       # Routing for the server
-  shelf_web_socket: ^1.0.0   # WebSockets for Real-time Trust Me
+  lucide_icons: ^0.257.0
+  glassmorphism: ^3.0.0
+  qr_flutter: ^4.1.0
+  window_manager: ^0.5.1
+  device_info_plus: ^10.1.0
+  file_picker: ^8.0.0
+  process_run: ^0.13.0
+  path_provider: ^2.1.2
+  sqflite_common_ffi: ^2.3.2
+  supabase_flutter: ^2.3.0
+  shelf: ^1.4.1
+  shelf_router: ^1.1.4
+  shelf_web_socket: ^1.0.4
   web_socket_channel: ^2.4.0
-  process_run: ^0.12.0       # To run Docker commands
-  path_provider: ^2.0.0
-  sqflite_common_ffi: ^2.3.0 # Local DB for desktop settings
 
 dev_dependencies:
   flutter_test:
