@@ -25,6 +25,7 @@ dependencies:
   shelf_web_socket: ^1.0.4
   web_socket_channel: ^2.4.0
   shared_preferences: ^2.5.4
+  uuid: ^4.0.0
 
 dev_dependencies:
   flutter_test:

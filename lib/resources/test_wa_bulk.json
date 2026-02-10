@@ -1,0 +1,286 @@
+{
+  "name": "test bulk",
+  "nodes": [
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "https://graph.facebook.com/v23.0/710594098813520/messages",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Authorization",
+              "value": "Bearer EAAXqLm8jAw0BPf1gXMjmub1hVc952DgHlcAEIT6j8HVfZAQZCSAdy4VanLwgr74MVzdmdbT1VNzN6h2xcFLvmEZCJs8ZApKBijcC1vvAtxm4hZCZC2IZCZCjj8WN4ZBnXyZAHKjL3Dfa1jAZBXprZAPEgi3d63rZBniRMqPaAcdMgGtCok2QfA0Y19Rs1SdzZBADKSRINM"
+            }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={\n  \"messaging_product\": \"whatsapp\",\n  \"recipient_type\": \"individual\",\n  \"to\": \"{{ $json.Number }}\",\n  \"type\": \"template\",\n  \"template\": {\n    \"name\": \"live001\",\n    \"language\": { \"code\": \"en\" },\n    \"components\": [\n      {\n        \"type\": \"header\",\n        \"parameters\": [\n          { \"type\": \"image\", \"image\": { \"link\": \"{{ $json['Image URL'] }}\" } }\n        ]\n      },\n      {\n        \"type\": \"body\",\n        \"parameters\": [\n          { \"type\": \"text\", \"text\": \"{{ $json.Value_1 }}\" },\n          { \"type\": \"text\", \"text\": \"{{ $json.Value_2 }}\" }\n        ]\n      },\n      {\n        \"type\": \"button\",\n        \"sub_type\": \"url\",\n        \"index\": 1,\n        \"parameters\": [\n          { \"type\": \"text\", \"text\": \"Take Me There\" }\n        ]\n      }\n    ]\n  }\n} ",
+        "options": {}
+      },
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        1232,
+        176
+      ],
+      "id": "484a282b-e08e-47da-95ca-5fc6e6f40dbf",
+      "name": "Send WhatsApp Image+Button",
+      "disabled": true
+    },
+    {
+      "parameters": {
+        "assignments": {
+          "assignments": [
+            {
+              "id": "4cc961d4-e942-4a1b-ab75-6eaa73409074",
+              "name": "name",
+              "value": "={{ $json.name }}",
+              "type": "string"
+            },
+            {
+              "id": "6bef49b5-07fe-4e13-9ef9-1e5d525c28d7",
+              "name": "URL",
+              "value": "https://encrypted-tbn0.gstatic.com/images?q=tbn:ANd9GcQFrHF2-6Rj7C3Pf6DEDMylQmOOb9qwBYD8yg&s",
+              "type": "string"
+            },
+            {
+              "id": "f798bf52-69d7-420c-b0da-bbe019dc5ada",
+              "name": "number",
+              "value": "={{ $json.number }}",
+              "type": "string"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "type": "n8n-nodes-base.set",
+      "typeVersion": 3.4,
+      "position": [
+        224,
+        -48
+      ],
+      "id": "3d622c66-255d-48a4-9cbd-240a06b8c9d3",
+      "name": "Edit Fields"
+    },
+    {
+      "parameters": {},
+      "type": "n8n-nodes-base.manualTrigger",
+      "typeVersion": 1,
+      "position": [
+        -624,
+        240
+      ],
+      "id": "08bdd438-cfa3-4f2a-8548-327a66b2a9f3",
+      "name": "When clicking ‘Execute workflow’"
+    },
+    {
+      "parameters": {
+        "options": {}
+      },
+      "type": "n8n-nodes-base.splitInBatches",
+      "typeVersion": 3,
+      "position": [
+        0,
+        64
+      ],
+      "id": "4ba9b714-e766-423a-afca-ce155e772747",
+      "name": "Loop Over Items"
+    },
+    {
+      "parameters": {
+        "phoneNumberId": "710594098813520",
+        "template": "upcoming_event|en"
+      },
+      "type": "n8n-nodes-base.whatsApp",
+      "typeVersion": 1,
+      "position": [
+        1616,
+        -48
+      ],
+      "id": "03eedae7-928a-4995-b39b-73c53cc2a52e",
+      "name": "Send template",
+      "webhookId": "07e67553-ab75-4c15-99f6-7dc7fd382cfe",
+      "disabled": true
+    },
+    {
+      "parameters": {
+        "phoneNumberId": "670154132844000",
+        "recipientPhoneNumber": "={{ $json.number }}",
+        "template": "live001|en",
+        "components": {
+          "component": [
+            {
+              "type": "header",
+              "headerParameters": {
+                "parameter": [
+                  {
+                    "type": "image",
+                    "imageLink": "=https://uploadservice.myqrmart.com/u/44d14728-2263-47f4-9f62-b52e7a04acf5.jpg"
+                  }
+                ]
+              }
+            },
+            {
+              "bodyParameters": {
+                "parameter": [
+                  {
+                    "text": "={{ $json.name }}"
+                  },
+                  {
+                    "text": "StoneAge"
+                  }
+                ]
+              }
+            }
+          ]
+        }
+      },
+      "type": "n8n-nodes-base.whatsApp",
+      "typeVersion": 1,
+      "position": [
+        416,
+        80
+      ],
+      "id": "ba0c31a8-0b9a-4e84-b457-f13f87fa885f",
+      "name": "Send template1",
+      "webhookId": "293da04d-36f1-40d3-96bb-84539875baa2",
+      "credentials": {
+        "whatsAppApi": {
+          "id": "RNOrThiiQoyWFtzU",
+          "name": "9492461455"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "documentId": {
+          "__rl": true,
+          "value": "1Uu2_C3V3UkNiSPR2xCCBhQsgr9ae04i0igoIuLOu4Ww",
+          "mode": "list",
+          "cachedResultName": "WhatsApp_Bulk",
+          "cachedResultUrl": "https://docs.google.com/spreadsheets/d/1Uu2_C3V3UkNiSPR2xCCBhQsgr9ae04i0igoIuLOu4Ww/edit?usp=drivesdk"
+        },
+        "sheetName": {
+          "__rl": true,
+          "value": "gid=0",
+          "mode": "list",
+          "cachedResultName": "Sheet1",
+          "cachedResultUrl": "https://docs.google.com/spreadsheets/d/1Uu2_C3V3UkNiSPR2xCCBhQsgr9ae04i0igoIuLOu4Ww/edit#gid=0"
+        },
+        "options": {}
+      },
+      "type": "n8n-nodes-base.googleSheets",
+      "typeVersion": 4.7,
+      "position": [
+        -208,
+        240
+      ],
+      "id": "56afb232-29da-4212-85e6-75f4dbe573de",
+      "name": "Get row(s) in sheet",
+      "credentials": {
+        "googleSheetsOAuth2Api": {
+          "id": "4LVDGW3G8kn5tsp7",
+          "name": "StoneAge"
+        }
+      },
+      "disabled": true
+    },
+    {
+      "parameters": {
+        "operation": "getAll",
+        "tableId": "test_whats_app_bulk_templates",
+        "returnAll": true
+      },
+      "type": "n8n-nodes-base.supabase",
+      "typeVersion": 1,
+      "position": [
+        -416,
+        240
+      ],
+      "id": "b7fa2714-4eca-498f-a5c7-fa55b76bd55e",
+      "name": "Get many rows",
+      "credentials": {
+        "supabaseApi": {
+          "id": "NXAdeQYqKCfu2rdK",
+          "name": "Base"
+        }
+      }
+    }
+  ],
+  "pinData": {},
+  "connections": {
+    "Edit Fields": {
+      "main": [
+        [
+          {
+            "node": "Send template1",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "When clicking ‘Execute workflow’": {
+      "main": [
+        [
+          {
+            "node": "Get many rows",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Loop Over Items": {
+      "main": [
+        [],
+        [
+          {
+            "node": "Edit Fields",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "Loop Over Items",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Get row(s) in sheet": {
+      "main": [
+        [
+          {
+            "node": "Loop Over Items",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Get many rows": {
+      "main": [
+        [
+          {
+            "node": "Get row(s) in sheet",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "active": false,
+  "settings": {
+    "executionOrder": "v1"
+  },
+  "versionId": "91aac2f5-8650-440a-b4b6-e5edacfe596c",
+  "meta": {
+    "instanceId": "166a35e558299f2fb26f3d9481588848ae1e3ed44ed88dfa8e5f21ddca9941f0"
+  },
+  "id": "AOVq0BuKnqmsjyhu",
+  "tags": []
+}
