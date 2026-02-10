@@ -1,0 +1,11 @@
+[Desktop Entry]
+Type=Application
+Version=1.0
+Name=Guptik Desktop
+Comment=A secure vault application for managing files and encryption
+Exec=guptik_desktop
+Icon=guptik_desktop
+Categories=Utility;FileManager;
+Terminal=false
+StartupNotify=true
+
