@@ -8,7 +8,7 @@ class VaultFile {
   final String? fileType;
   final String? mimeType;
   final BigInt? sizeBytes;
-  final bool isFavorite;
+  bool isFavorite;
   final DateTime syncedAt;
   final DateTime createdAt;
   final String? publicAccessLink;

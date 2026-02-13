@@ -16,6 +16,8 @@ class SupabaseService {
 
   SupabaseService._internal();
 
+  SupabaseClient get client => _supabase;
+
   final SupabaseClient _supabase = Supabase.instance.client;
 
   String? get currentUserId => _supabase.auth.currentUser?.id;
@@ -38,6 +40,18 @@ class SupabaseService {
           .toList();
     } catch (e) {
       throw Exception('Error fetching vault files: $e');
+    }
+  }
+
+  Future<void> triggerTunnelProvisioning(String deviceId) async {
+    try {
+      // Calling the function you just deployed to project 'vyujytsdtdmdjlrvglel'
+      await _supabase.functions.invoke('user-cf-tunnel', body: {
+        'user_id': _supabase.auth.currentUser!.id,
+        'device_id': deviceId,
+      });
+    } catch (e) {
+      print("Cloudflare Provisioning Error: $e");
     }
   }
 

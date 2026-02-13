@@ -25,6 +25,7 @@ class _InstallationScreenState extends State<InstallationScreen> {
     _startInstallationProcess();
   }
 
+
   void _addLog(String message) {
     setState(() => _logs.add("[${DateTime.now().toIso8601String().split('T')[1].split('.')[0]}] $message"));
   }

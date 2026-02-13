@@ -3,6 +3,7 @@ import 'package:process_run/shell.dart';
 
 class DockerService {
   final Shell _shell = Shell();
+  String _vaultPath = '/media/pruthvisimha/Drive/DB/guptik_local';
 
   /// Checks if Docker is installed
   Future<bool> isDockerInstalled() async {
@@ -12,6 +13,21 @@ class DockerService {
     } catch (e) {
       return false;
     }
+  }
+
+  Future<void> createEnvFile({
+    required String port,
+    required String dbPass,
+    required String tunnelToken,
+  }) async {
+    final file = File('$_vaultPath/.env');
+    final content = '''
+  POSTGRES_PASSWORD=$dbPass
+  POSTGRES_PORT=$port
+  CF_TUNNEL_TOKEN=$tunnelToken
+  PROJECT_NAME=guptik_user
+  ''';
+    await file.writeAsString(content);
   }
 
   /// Starts the external services stack
