@@ -85,6 +85,14 @@ class SupabaseService {
     }
   }
 
+  Future<Map<String, dynamic>> provisionTunnel(String deviceId) async {
+    final response = await _supabase.functions.invoke(
+      'user-cf-tunnel',
+      body: {'device_id': deviceId},
+    );
+    return response.data; // Contains tunnelToken and publicUrl
+  }
+
   Future<void> deleteVaultFile(String id) async {
     try {
       await _supabase
