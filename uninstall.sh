@@ -1,17 +1,25 @@
 #!/bin/bash
-echo "Uninstalling Guptik and wiping ALL data..."
+# GupTik Desktop Cross-Platform Uninstallation
+set -e
 
-# 1. Stop containers and delete local volumes (the -v flag is key)
-if [ -d "$HOME/Guptik/docker" ]; then
-    cd "$HOME/Guptik/docker"
-    docker-compose down -v --remove-orphans
+# Detect OS
+if [[ "$OSTYPE" == "linux-gnu"* ]]; then
+    OS="linux"
+elif [[ "$OSTYPE" == "darwin"* ]]; then
+    OS="macos"
+elif [[ "$OSTYPE" == "msys" || "$OSTYPE" == "cygwin" ]]; then
+    OS="windows"
+else
+    echo "Unsupported OS: $OSTYPE"
+    exit 1
 fi
 
-# 2. Delete the physical drive data and the app folder
-rm -rf "/media/pruthvisimha/Drive/DB/guptik_local"
-rm -rf "$HOME/Guptik"
+echo "--- GupTik Desktop Uninstallation ($OS) ---"
 
-# 3. Wipe Flutter local storage (SharedPreferences/DB)
-rm -rf "$HOME/.config/guptik_desktop"
-
-echo "Success. System is clean."
+if [ "$OS" == "linux" ]; then
+    bash .flutter-install-scripts/linux-uninstall.sh
+elif [ "$OS" == "macos" ]; then
+    bash .flutter-install-scripts/macos-uninstall.sh
+else
+    powershell -ExecutionPolicy Bypass -File .flutter-install-scripts/windows-uninstall.ps1
+fi

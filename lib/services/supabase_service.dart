@@ -6,6 +6,8 @@ import '../models/home.dart';
 import '../models/room.dart';
 import '../models/board.dart';
 import '../models/switch.dart';
+import 'package:shared_preferences/shared_preferences.dart';
+import 'package:uuid/uuid.dart';
 
 class SupabaseService {
   static final SupabaseService _instance = SupabaseService._internal();
@@ -92,6 +94,38 @@ class SupabaseService {
     } catch (e) {
       throw Exception('Error deleting vault file: $e');
     }
+  }
+
+  Future<String?> provisionUserTunnel(String deviceId) async {
+    try {
+      final response = await _supabase.functions.invoke(
+        'user-cf-tunnel',
+        body: {
+          'user_id': currentUserId,
+          'device_id': deviceId,
+        },
+      );
+      
+      // Returns the token if successful
+      if (response.status == 200) {
+        return response.data['cf_tunnel_token'];
+      }
+      return null;
+    } catch (e) {
+      print("Edge Function Error: $e");
+      return null;
+    }
+  }
+
+  Future<String> getOrCreateDeviceId() async {
+    final prefs = await SharedPreferences.getInstance();
+    String? deviceId = prefs.getString('desktop_device_id');
+    
+    if (deviceId == null) {
+      deviceId = const Uuid().v4();
+      await prefs.setString('desktop_device_id', deviceId);
+    }
+    return deviceId;
   }
 
   Future<void> updateVaultFileFavorite(String id, bool isFavorite) async {

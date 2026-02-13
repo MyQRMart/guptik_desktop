@@ -1,30 +1,29 @@
 #!/bin/bash
-
-# GupTik Desktop - Linux Uninstallation Script
+# GupTik Desktop - Total Local Data Wipe (Linux)
 
 INSTALL_DIR="$HOME/.local/share/guptik"
 DESKTOP_DIR="$HOME/.local/share/applications"
 LOCAL_BIN="$HOME/.local/bin"
 
-# Check if installed
-if [ ! -d "$INSTALL_DIR" ]; then
-    echo "Application does not appear to be installed."
-    exit 1
-fi
+# These are the specific folders where session data and preferences live
+CONFIG_DIR="$HOME/.config/guptik_desktop" 
+DATA_DIR="$HOME/.local/share/guptik_desktop"
 
-echo "Removing application files..."
+echo "Stopping guptik_desktop processes..."
+pkill -f guptik_desktop || true
+
+echo "Removing binary and desktop entries..."
 rm -rf "$INSTALL_DIR"
-
-echo "Removing desktop entry..."
 rm -f "$DESKTOP_DIR/com.stoneage.guptik_desktop.desktop"
-
-echo "Removing launcher script..."
 rm -f "$LOCAL_BIN/guptik_desktop"
 
-# Update desktop database
+echo "Wiping persistent local preferences..."
+# Deleting these ensures the QR Login appears on next install
+rm -rf "$CONFIG_DIR"
+rm -rf "$DATA_DIR"
+
 if command -v update-desktop-database &> /dev/null; then
     update-desktop-database "$DESKTOP_DIR" 2>/dev/null || true
 fi
 
-echo ""
-echo "=== Linux Uninstallation Complete ==="
+echo "✅ Linux Uninstallation Complete. All session data wiped."
