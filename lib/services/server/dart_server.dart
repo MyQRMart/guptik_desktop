@@ -2,7 +2,6 @@ import 'dart:io';
 import 'package:shelf/shelf.dart';
 import 'package:shelf/shelf_io.dart' as io;
 import 'package:shelf_router/shelf_router.dart';
-import 'package:shelf_web_socket/shelf_web_socket.dart';
 import 'package:web_socket_channel/web_socket_channel.dart';
 
 class NexusServer {
@@ -32,11 +31,6 @@ class NexusServer {
     });
 
     // 3. TRUST ME: WebSocket Relay
-    router.get('/ws/trust_me', webSocketHandler((WebSocketChannel webSocket) {
-      webSocket.stream.listen((message) {
-        _handleTrustMessage(webSocket, message);
-      });
-    }));
 
     // Start the server
     final handler = Pipeline().addMiddleware(logRequests()).addHandler(router.call);

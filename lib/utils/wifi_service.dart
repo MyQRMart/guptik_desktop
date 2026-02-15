@@ -1,4 +1,3 @@
-import 'dart:io';
 
 class WifiService {
   // Mock WiFi networks - in production, use actual WiFi scanning library

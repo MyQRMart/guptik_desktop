@@ -1,5 +1,5 @@
 import 'package:flutter/material.dart';
-import 'package:supabase_flutter/supabase_flutter.dart';
+import 'package:guptik_desktop/services/supabase_service.dart';
 import '../../services/external/docker_service.dart';
 import '../dashboard/dashboard_screen.dart';
 
@@ -33,26 +33,31 @@ class _InstallationScreenState extends State<InstallationScreen> {
   }
 
   Future<void> _runInstallation() async {
-    _addLog("Initializing Cloudflare Tunnel via Edge Function...");
+    _addLog("Waiting for Cloudflare Tunnel provisioning...");
     
     try {
-      // 1. Invoke the Edge Function
-      final FunctionResponse response = await Supabase.instance.client.functions.invoke(
-        'user-cf-tunnel', 
-        body: {'device_id': widget.deviceId},
-      );
+      String? token;
+      String? publicUrl;
+      
+      // 1. Poll Supabase for up to 30 seconds to get the token
+      for (int i = 0; i < 15; i++) {
+        final config = await SupabaseService().getTunnelConfig(widget.deviceId);
+        
+        if (config != null && config['cf_tunnel_token'] != null) {
+          token = config['cf_tunnel_token'];
+          publicUrl = config['public_url'];
+          break; // Found it, exit the loop
+        }
+        
+        _addLog("Checking database... (${i + 1}/15)");
+        await Future.delayed(const Duration(seconds: 2));
+      }
 
-      // Handle potential null or error responses
-      if (response.data == null) throw Exception("Empty response from Edge Function");
-      
-      final String? token = response.data['tunnelToken'];
-      final String? publicUrl = response.data['publicUrl'];
-      
       if (token == null || publicUrl == null) {
-        throw Exception("Missing tunnel data in response");
+        throw Exception("Timeout: Could not retrieve Tunnel data from Supabase.");
       }
       
-      _addLog("Tunnel provisioned: $publicUrl");
+      _addLog("Tunnel configuration found: $publicUrl");
 
       // 2. Configure local environment files
       _addLog("Writing Docker configurations to local path...");
@@ -65,16 +70,6 @@ class _InstallationScreenState extends State<InstallationScreen> {
       // 3. Start the Docker Stack
       _addLog("Launching Docker containers (Ollama, Kong, Postgres)...");
       await _dockerService.startStack();
-
-      // 4. Update the device status in Supabase
-      await Supabase.instance.client
-          .from('desktop_devices')
-          .update({
-            'installation_status': 'completed', 
-            'public_url': publicUrl,
-            'cf_tunnel_token': token // Store token for recovery
-          })
-          .eq('device_id', widget.deviceId);
 
       _addLog("SUCCESS: Installation Complete!");
       setState(() => _isFinished = true);

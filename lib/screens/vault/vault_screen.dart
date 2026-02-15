@@ -16,10 +16,10 @@ class VaultScreen extends StatefulWidget {
 class _VaultScreenState extends State<VaultScreen> {
   late final SupabaseService _supabaseService;
   late Future<List<VaultFile>> _filesFuture;
-  bool _isSyncing = false;
+  final bool _isSyncing = false;
   String _vaultPath = '/home/user/Vault';
-  String _searchQuery = '';
-  String _selectedFilter = 'all';
+  final String _searchQuery = '';
+  final String _selectedFilter = 'all';
 
   @override
   void initState() {

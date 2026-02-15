@@ -2,6 +2,7 @@ import 'dart:io';
 import 'dart:math';
 import 'package:flutter/material.dart';
 import 'package:device_info_plus/device_info_plus.dart';
+import 'package:guptik_desktop/services/supabase_service.dart';
 import 'package:qr_flutter/qr_flutter.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
 import 'package:shared_preferences/shared_preferences.dart';
@@ -69,24 +70,36 @@ class _QrLoginScreenState extends State<QrLoginScreen> {
 
   Future<void> _manualCheck() async {
     setState(() => _isChecking = true);
+    
     try {
+      // 1. Verify the mobile app successfully inserted the record
       final response = await Supabase.instance.client
           .from('desktop_devices')
-          .select()
+          .select('user_id')
           .eq('device_id', _deviceId!)
           .maybeSingle();
 
-      if (response != null && response['is_verified'] == true) {
-        _handleLoginSuccess(response);
-      } else {
+      if (response != null && response['user_id'] != null) {
+        print("User linked! Triggering provisioning...");
+        // 2. Trigger n8n in the background
+        await SupabaseService().triggerN8nWebhook(_deviceId!);
+        
+        // 3. Move to Storage Selection
         if (mounted) {
-          ScaffoldMessenger.of(context).showSnackBar(
-            const SnackBar(content: Text("Waiting for mobile confirmation...")),
+          Navigator.pushReplacement(
+            context,
+            MaterialPageRoute(builder: (_) => StorageSelectionScreen(deviceId: _deviceId!)),
           );
         }
+      } else {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text("Device not linked yet. Please scan with the mobile app first.")),
+        );
       }
+    } catch (e) {
+      print("Check error: $e");
     } finally {
-      if (mounted) setState(() => _isChecking = false);
+      setState(() => _isChecking = false);
     }
   }
 

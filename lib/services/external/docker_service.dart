@@ -2,44 +2,44 @@ import 'dart:io';
 import 'package:process_run/shell.dart';
 
 class DockerService {
-  final Shell _shell = Shell();
   String? _vaultPath;
 
-  // Fixes: "The method 'setVaultPath' isn't defined"
   void setVaultPath(String path) => _vaultPath = path;
 
-  // Fixes: "The method 'autoConfigure' isn't defined"
-  // This automatically generates the files so the user doesn't have to
   Future<void> autoConfigure({
     required String dbPass,
     required String tunnelToken,
     required String publicUrl,
-    String port = "5432",
   }) async {
-    if (_vaultPath == null) throw Exception("Vault path not set");
+    if (_vaultPath == null) throw Exception("Vault path is not initialized");
+
+    // PRE-CREATE DIRECTORIES: Prevents strict Linux Docker permission errors
+    Directory('$_vaultPath/data/postgres').createSync(recursive: true);
+    Directory('$_vaultPath/data/ollama').createSync(recursive: true);
 
     // 1. Generate .env
     final envFile = File('$_vaultPath/.env');
-    await envFile.writeAsString('''
-POSTGRES_PORT=$port
+    final content = '''
 POSTGRES_PASSWORD=$dbPass
+POSTGRES_PORT=55432
 CF_TUNNEL_TOKEN=$tunnelToken
-VAULT_PATH=$_vaultPath
 PUBLIC_URL=$publicUrl
-''');
-
-    // 2. Generate kong.yml for routing
+VAULT_PATH=$_vaultPath
+''';
+    await envFile.writeAsString(content);
+    
+    // 2. Generate kong.yml (Routing Gateway)
     final kongFile = File('$_vaultPath/kong.yml');
     await kongFile.writeAsString('''
 _format_version: "1.1"
 services:
   - name: vault
-    url: http://db:5432
+    url: http://db:55432
     routes:
       - name: vault-route
         paths: [/vault]
   - name: ai
-    url: http://ollama:11434
+    url: http://ollama:55434
     routes:
       - name: ai-route
         paths: [/ai]
@@ -57,10 +57,22 @@ services:
       - TUNNEL_TOKEN=\${CF_TUNNEL_TOKEN}
     command: tunnel --no-autoupdate run
 
+  kong:
+    image: supabase/kong:2.8.1
+    ports:
+      - "55000:8000"
+    environment:
+      KONG_DATABASE: "off"
+      KONG_DECLARATIVE_CONFIG: /var/lib/kong/kong.yml
+    volumes:
+      - ./kong.yml:/var/lib/kong/kong.yml
+    depends_on:
+      - db
+
   db:
     image: supabase/postgres:15.1.1.78
     ports:
-      - "\${POSTGRES_PORT}:5432"
+      - "\${POSTGRES_PORT}:55432"
     environment:
       POSTGRES_PASSWORD: \${POSTGRES_PASSWORD}
     volumes:
@@ -69,18 +81,28 @@ services:
 
   ollama:
     image: ollama/ollama:latest
+    restart: unless-stopped
     volumes:
       - ./data/ollama:/root/.ollama
 ''');
   }
 
-  // Fixes: "The method 'startStack' isn't defined"
   Future<void> startStack() async {
-    if (_vaultPath == null) return;
+    if (_vaultPath == null) throw Exception("Vault path not set");
+    
+    // THE FIX: Set the working directory natively via the Shell parameters
+    final vaultShell = Shell(workingDirectory: _vaultPath);
+    
     try {
-      await _shell.run('cd $_vaultPath && docker-compose up -d');
+      // First try the modern Docker Compose command (v2)
+      await vaultShell.run('docker compose up -d');
     } catch (e) {
-      throw Exception("Docker failed to start: $e");
+      try {
+        // Fallback to the older Docker Compose command (v1)
+        await vaultShell.run('docker-compose up -d');
+      } catch (fallbackError) {
+        throw Exception("Failed to start Docker. Is Docker installed and running? Error: $fallbackError");
+      }
     }
   }
 }

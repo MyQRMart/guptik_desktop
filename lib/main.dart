@@ -4,7 +4,7 @@ import 'package:window_manager/window_manager.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'package:google_fonts/google_fonts.dart';
 import 'screens/dashboard/dashboard_screen.dart';
-import 'screens/onboarding/qr_login_screen.dart';
+import 'screens/auth/qr_login_screen.dart';
 
 void main() async {
   WidgetsFlutterBinding.ensureInitialized();

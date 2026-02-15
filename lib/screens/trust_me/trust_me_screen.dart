@@ -9,8 +9,8 @@ class TrustMeScreen extends StatefulWidget {
 }
 
 class _TrustMeScreenState extends State<TrustMeScreen> {
-  String _inviteCode = "TM-8X92-LZ"; // Mock code
-  int _timeLeft = 30;
+  final String _inviteCode = "TM-8X92-LZ"; // Mock code
+  final int _timeLeft = 30;
 
   @override
   Widget build(BuildContext context) {
