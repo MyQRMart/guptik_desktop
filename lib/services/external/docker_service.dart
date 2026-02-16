@@ -13,6 +13,7 @@ class DockerService {
   }) async {
     if (_vaultPath == null) throw Exception("Vault path is not initialized");
 
+    // 1. PRE-CREATE ALL DIRECTORIES
     final requiredDirs = [
       '$_vaultPath/data/postgres',
       '$_vaultPath/data/ollama',
@@ -22,11 +23,10 @@ class DockerService {
 
     for (var path in requiredDirs) {
       final dir = Directory(path);
-      if (!dir.existsSync()) await dir.create(recursive: true);
+      if (!dir.existsSync()) {
+        await dir.create(recursive: true);
+      }
     }
-
-    // 1. GENERATE GATEWAY (With the new LIST Endpoint)
-    await _generateGatewayFiles(publicUrl);
 
     // 2. Generate .env
     final envFile = File('$_vaultPath/.env');
@@ -38,7 +38,10 @@ PUBLIC_URL=$publicUrl
 VAULT_PATH=$_vaultPath
 ''');
 
-    // 3. Generate docker-compose.yml
+    // 3. Generate Gateway Code
+    await _generateGatewayFiles(publicUrl);
+
+    // 4. Generate docker-compose.yml
     final composeFile = File('$_vaultPath/docker-compose.yml');
     await composeFile.writeAsString('''
 services:
@@ -51,6 +54,7 @@ services:
 
   gateway:
     image: dart:stable
+    restart: always
     working_dir: /app
     ports:
       - "55000:8080"
@@ -64,6 +68,7 @@ services:
 
   db:
     image: supabase/postgres:15.1.1.78
+    restart: always
     ports:
       - "\${POSTGRES_PORT}:5432"
     environment:
@@ -73,7 +78,7 @@ services:
 
   ollama:
     image: ollama/ollama:latest
-    restart: unless-stopped
+    restart: always
     ports:
       - "55434:11434"
     volumes:
@@ -82,6 +87,7 @@ services:
   }
 
   Future<void> _generateGatewayFiles(String publicUrl) async {
+    // 1. pubspec.yaml
     final pubspec = File('$_vaultPath/gateway/pubspec.yaml');
     await pubspec.writeAsString('''
 name: guptik_gateway
@@ -89,6 +95,7 @@ environment: {sdk: '>=3.0.0 <4.0.0'}
 dependencies: {shelf: ^1.4.0, shelf_router: ^1.1.0, http: ^1.1.0, mime: ^1.0.4}
 ''');
 
+    // 2. server.dart (BULLETPROOF VERSION)
     final server = File('$_vaultPath/gateway/server.dart');
     await server.writeAsString(r'''
 import 'dart:io';
@@ -102,7 +109,72 @@ import 'package:mime/mime.dart';
 void main() async {
   final router = Router();
 
-  // 1. AI Proxy
+  // DEBUG: Print startup
+  print('Guptik Gateway Starting...');
+  
+  // Ensure storage directory exists
+  final storageDir = Directory('/app/storage');
+  if (!await storageDir.exists()) {
+    print('Creating storage directory at /app/storage');
+    await storageDir.create(recursive: true);
+  }
+
+  // 1. UPLOAD FILE (Robust Stream Handling)
+  router.post('/vault/upload/<filename>', (Request req, String filename) async {
+    IOSink? sink;
+    try {
+      print('Starting upload for: $filename');
+      final file = File('/app/storage/$filename');
+      
+      // Use explicit sink control instead of pipe()
+      sink = file.openWrite();
+      await sink.addStream(req.read());
+      await sink.flush();
+      await sink.close();
+      
+      final size = await file.length();
+      print('Upload complete. Size: $size bytes');
+      
+      return Response.ok(jsonEncode({'status': 'saved', 'path': filename, 'size': size}));
+    } catch (e, stack) {
+      print('UPLOAD FAILED: $e');
+      print(stack);
+      
+      // Attempt to close sink if open
+      try { await sink?.close(); } catch (_) {}
+      
+      // Return plain text error so it shows in curl
+      return Response.internalServerError(body: 'UPLOAD ERROR: $e');
+    }
+  });
+  
+  // 2. DOWNLOAD FILE
+  router.get('/vault/files/<filename>', (Request req, String filename) async {
+    final file = File('/app/storage/$filename');
+    if (!await file.exists()) return Response.notFound('File not found');
+    final mimeType = lookupMimeType(file.path) ?? 'application/octet-stream';
+    return Response.ok(file.openRead(), headers: {'Content-Type': mimeType});
+  });
+
+  // 3. LIST FILES
+  router.get('/vault/list', (Request req) {
+    try {
+      final dir = Directory('/app/storage');
+      if (!dir.existsSync()) return Response.ok('[]');
+      
+      final files = dir.listSync().whereType<File>().map((f) => {
+        'name': f.uri.pathSegments.last,
+        'size': f.lengthSync(),
+        'modified': f.lastModifiedSync().toIso8601String()
+      }).toList();
+      
+      return Response.ok(jsonEncode(files), headers: {'Content-Type': 'application/json'});
+    } catch (e) {
+      return Response.internalServerError(body: 'List Error: $e');
+    }
+  });
+
+  // 4. AI PROXY
   router.post('/guptik/chat', (Request req) async {
     try {
       final payload = await req.readAsString();
@@ -116,36 +188,7 @@ void main() async {
       return Response.internalServerError(body: 'AI Offline');
     }
   });
-
-  // 2. Upload File
-  router.post('/vault/upload/<filename>', (Request req, String filename) async {
-    final file = File('/app/storage/$filename');
-    await req.read().pipe(file.openWrite());
-    return Response.ok(jsonEncode({'status': 'saved', 'path': filename}));
-  });
   
-  // 3. Download File
-  router.get('/vault/files/<filename>', (Request req, String filename) async {
-    final file = File('/app/storage/$filename');
-    if (!await file.exists()) return Response.notFound('File not found');
-    final mimeType = lookupMimeType(file.path) ?? 'application/octet-stream';
-    return Response.ok(file.openRead(), headers: {'Content-Type': mimeType});
-  });
-
-  // 4. LIST FILES (New Endpoint for Mobile App)
-  router.get('/vault/list', (Request req) {
-    final dir = Directory('/app/storage');
-    if (!dir.existsSync()) return Response.ok('[]');
-    
-    final files = dir.listSync().whereType<File>().map((f) => {
-      'name': f.uri.pathSegments.last,
-      'size': f.lengthSync(),
-      'modified': f.lastModifiedSync().toIso8601String()
-    }).toList();
-    
-    return Response.ok(jsonEncode(files), headers: {'Content-Type': 'application/json'});
-  });
-
   router.get('/', (Request req) => Response.ok('GUPTIK GATEWAY ONLINE'));
 
   final handler = Pipeline().addMiddleware(logRequests()).addHandler(router.call);
@@ -171,11 +214,7 @@ void main() async {
     }
 
     await shell.run('$dockerCmd compose pull');
-    // Added --build to force the Gateway to pick up the new server.dart code
-    final result = await shell.run('$dockerCmd compose up -d --build --remove-orphans');
-
-    if (result.first.exitCode != 0) {
-      throw Exception("Launch Failed: ${result.first.stderr}");
-    }
+    // Force rebuild to update server.dart
+    await shell.run('$dockerCmd compose up -d --build --remove-orphans');
   }
 }

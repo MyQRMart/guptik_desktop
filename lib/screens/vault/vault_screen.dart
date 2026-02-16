@@ -3,7 +3,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter/services.dart'; 
 import 'package:lucide_icons/lucide_icons.dart';
 import 'package:shared_preferences/shared_preferences.dart';
-import 'package:url_launcher/url_launcher.dart'; 
+import 'package:supabase_flutter/supabase_flutter.dart'; // Needed for self-healing
 import '../../models/vault_file.dart';
 import '../../services/supabase_service.dart';
 import '../../services/storage_service.dart';
@@ -21,7 +21,7 @@ class _VaultScreenState extends State<VaultScreen> {
   
   List<VaultFile> _files = [];
   bool _isLoading = true;
-  String? _vaultPath;
+  String? _vaultPath; // This will now point to .../vault_files
   String? _publicUrl;
 
   @override
@@ -36,16 +36,39 @@ class _VaultScreenState extends State<VaultScreen> {
     final prefs = await SharedPreferences.getInstance();
     String? storedPath = prefs.getString('vault_path');
     String? storedUrl = await _storage.getPublicUrl();
+    String? deviceId = await _storage.getDeviceId();
 
-    // Default Fallbacks
+    // SELF-HEALING: If path is missing locally, fetch from Database
+    if (storedPath == null && deviceId != null) {
+      try {
+        final data = await Supabase.instance.client
+            .from('desktop_devices')
+            .select('vault_path')
+            .eq('device_id', deviceId)
+            .maybeSingle();
+            
+        if (data != null && data['vault_path'] != null) {
+          storedPath = data['vault_path'];
+          await prefs.setString('vault_path', storedPath!); // Save for next time
+        }
+      } catch (e) {
+        print("Error fetching path from DB: $e");
+      }
+    }
+
+    // Fallback (Only if DB fetch also failed)
     if (storedPath == null) {
        if (Platform.isWindows) storedPath = 'C:\\GuptikVault';
        else storedPath = '${Platform.environment['HOME']}/GuptikVault';
     }
 
+    // CRITICAL FIX: Append 'vault_files' to the path
+    // The Docker container maps this specific subfolder to /app/storage
+    final String correctVaultPath = "$storedPath${Platform.pathSeparator}vault_files";
+
     if (mounted) {
       setState(() {
-        _vaultPath = storedPath;
+        _vaultPath = correctVaultPath;
         _publicUrl = storedUrl;
       });
       await _refreshFiles();
@@ -56,12 +79,14 @@ class _VaultScreenState extends State<VaultScreen> {
     if (_vaultPath == null) return;
 
     final dir = Directory(_vaultPath!);
+    
+    // Auto-create if missing (e.g. first run)
     if (!await dir.exists()) {
       await dir.create(recursive: true);
     }
 
     try {
-      final List<FileSystemEntity> entities = dir.listSync(recursive: true);
+      final List<FileSystemEntity> entities = dir.listSync(recursive: false); // recursive: false is safer for flat vaults
       final List<File> files = entities.whereType<File>().toList();
       
       files.sort((a, b) => b.lastModifiedSync().compareTo(a.lastModifiedSync()));
@@ -104,7 +129,6 @@ class _VaultScreenState extends State<VaultScreen> {
       return;
     }
 
-    // STRICT FIX: Handle nullable fileName safely
     final safeName = file.fileName ?? "file";
     final String shareLink = "https://$_publicUrl/vault/files/${Uri.encodeComponent(safeName)}";
 
@@ -178,6 +202,7 @@ class _VaultScreenState extends State<VaultScreen> {
         actions: [
            IconButton(
             icon: const Icon(Icons.folder_open),
+            tooltip: "Open in File Manager",
             onPressed: () { if (_vaultPath != null) _openFile(_vaultPath); },
           ),
           IconButton(
@@ -189,7 +214,16 @@ class _VaultScreenState extends State<VaultScreen> {
       body: _isLoading 
         ? const Center(child: CircularProgressIndicator())
         : _files.isEmpty 
-            ? const Center(child: Text("Vault is Empty", style: TextStyle(color: Colors.grey)))
+            ? Center(
+                child: Column(
+                  mainAxisAlignment: MainAxisAlignment.center,
+                  children: [
+                    const Text("Vault is Empty", style: TextStyle(color: Colors.grey, fontSize: 18)),
+                    const SizedBox(height: 10),
+                    Text("Folder: $_vaultPath", style: TextStyle(color: Colors.grey[700], fontFamily: 'Courier')),
+                  ],
+                )
+              )
             : GridView.builder(
                 padding: const EdgeInsets.all(24),
                 gridDelegate: const SliverGridDelegateWithFixedCrossAxisCount(
@@ -205,11 +239,8 @@ class _VaultScreenState extends State<VaultScreen> {
   }
 
   Widget _buildFileCard(VaultFile file) {
-    // STRICT FIX: Null check before calling toLowerCase()
     final fType = (file.fileType ?? "").toLowerCase();
     final bool isImg = ['jpg','jpeg','png','webp'].contains(fType);
-    
-    // STRICT FIX: Null check for filePath
     final safePath = file.filePath ?? "";
 
     return InkWell(
@@ -234,7 +265,6 @@ class _VaultScreenState extends State<VaultScreen> {
                 crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
                   Text(
-                    // STRICT FIX: Null check for fileName for the Text widget
                     file.fileName ?? "Unknown", 
                     maxLines: 1,
                     overflow: TextOverflow.ellipsis,
@@ -263,7 +293,6 @@ class _VaultScreenState extends State<VaultScreen> {
     }
   }
 
-  // STRICT FIX: Accept BigInt? and handle null gracefully
   String _formatSize(BigInt? bytes) {
     if (bytes == null) return '0 B';
     int b = bytes.toInt();
