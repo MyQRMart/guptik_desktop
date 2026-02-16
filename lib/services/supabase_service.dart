@@ -8,8 +8,8 @@ import '../models/board.dart';
 import '../models/switch.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'package:uuid/uuid.dart';
-import 'dart:convert'; // This fixes jsonEncode and jsonDecode
-import 'package:http/http.dart' as http; // This fixes the 'http' error
+import 'dart:convert';
+import 'package:http/http.dart' as http;
 
 class SupabaseService {
   static final SupabaseService _instance = SupabaseService._internal();
@@ -25,6 +25,31 @@ class SupabaseService {
   final SupabaseClient _supabase = Supabase.instance.client;
 
   String? get currentUserId => _supabase.auth.currentUser?.id;
+
+  // ============== N8N TRIGGER FIX ==============
+
+  Future<void> triggerN8nWebhook(String deviceId) async {
+    final webhookUrl = Uri.parse('https://yo.myqrmart.com/webhook/guptik-cf-user-tunnel');
+    try {
+      print("Attempting to trigger n8n for Device ID: $deviceId");
+      
+      // FIX: Added 'await' to ensure the request is actually sent before the app navigates
+      final response = await http.post(
+        webhookUrl,
+        headers: {'Content-Type': 'application/json'},
+        body: jsonEncode({'device_id': deviceId}),
+      );
+
+      if (response.statusCode == 200 || response.statusCode < 300) {
+        print("Webhook Triggered Successfully: ${response.statusCode}");
+      } else {
+        print("Webhook Failed: ${response.statusCode} - ${response.body}");
+      }
+    } catch (e) {
+      print('Webhook trigger exception: $e');
+      // Rethrow if you want the UI to handle it, otherwise just logging is fine here
+    }
+  }
 
   // ============== VAULT OPERATIONS ==============
 
@@ -44,18 +69,6 @@ class SupabaseService {
           .toList();
     } catch (e) {
       throw Exception('Error fetching vault files: $e');
-    }
-  }
-
-  Future<void> triggerTunnelProvisioning(String deviceId) async {
-    try {
-      // Calling the function you just deployed to project 'vyujytsdtdmdjlrvglel'
-      await _supabase.functions.invoke('user-cf-tunnel', body: {
-        'user_id': _supabase.auth.currentUser!.id,
-        'device_id': deviceId,
-      });
-    } catch (e) {
-      print("Cloudflare Provisioning Error: $e");
     }
   }
 
@@ -87,50 +100,6 @@ class SupabaseService {
     }
   }
 
-  Future<Map<String, dynamic>> provisionTunnel(String deviceId) async {
-    // Replace with your actual n8n Production Webhook URL
-    final webhookUrl = Uri.parse('https://yo.myqrmart.com/webhook/guptik-cf-user-tunnel');
-    try {
-          final response = await http.post(
-            webhookUrl,
-            headers: {'Content-Type': 'application/json'},
-            body: jsonEncode({'device_id': deviceId}),
-          );
-
-          if (response.statusCode == 200) {
-            final data = jsonDecode(response.body);
-            
-            // n8n sometimes wraps the response in a list, this handles both cases safely
-            final responseData = data is List ? data.first : data;
-
-            if (responseData['tunnelToken'] == null || responseData['publicUrl'] == null) {
-              throw Exception("Invalid data received from Webhook: $responseData");
-            }
-            
-            return responseData; 
-          } else {
-            throw Exception("Webhook failed with status: ${response.statusCode}");
-          }
-        } catch (e) {
-          throw Exception('Network or Webhook Error: $e');
-        }
-      }
-
-  Future<void> triggerN8nWebhook(String deviceId) async {
-    final webhookUrl = Uri.parse('https://yo.myqrmart.com/webhook/guptik-cf-user-tunnel');
-    try {
-      print("Attempting to trigger n8n for: $deviceId");
-      // We don't await the response body because n8n updates Supabase directly
-      http.post(
-        webhookUrl,
-        headers: {'Content-Type': 'application/json'},
-        body: jsonEncode({'device_id': deviceId}),
-      );
-    } catch (e) {
-      print('Webhook trigger error: $e');
-    }
-  }
-
   // 2. Fetch the updated config from the database
   Future<Map<String, dynamic>?> getTunnelConfig(String deviceId) async {
     try {
@@ -154,27 +123,6 @@ class SupabaseService {
           .eq('id', id);
     } catch (e) {
       throw Exception('Error deleting vault file: $e');
-    }
-  }
-
-  Future<String?> provisionUserTunnel(String deviceId) async {
-    try {
-      final response = await _supabase.functions.invoke(
-        'user-cf-tunnel',
-        body: {
-          'user_id': currentUserId,
-          'device_id': deviceId,
-        },
-      );
-      
-      // Returns the token if successful
-      if (response.status == 200) {
-        return response.data['cf_tunnel_token'];
-      }
-      return null;
-    } catch (e) {
-      print("Edge Function Error: $e");
-      return null;
     }
   }
 

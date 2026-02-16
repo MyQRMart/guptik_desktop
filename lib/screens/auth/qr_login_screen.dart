@@ -57,21 +57,24 @@ class _QrLoginScreenState extends State<QrLoginScreen> {
   }
 
   void _listenForMobileConfirmation() {
+    if (_deviceId == null) return;
     Supabase.instance.client
         .from('desktop_devices')
         .stream(primaryKey: ['id'])
         .eq('device_id', _deviceId!)
         .listen((List<Map<String, dynamic>> data) {
-          if (data.isNotEmpty && data.first['is_verified'] == true) {
+          if (data.isNotEmpty && data.first['user_id'] != null) {
             _handleLoginSuccess(data.first);
           }
         });
   }
 
   Future<void> _manualCheck() async {
+    if (_deviceId == null) return;
     setState(() => _isChecking = true);
     
     try {
+      print("Checking database for Device ID: $_deviceId");
       // 1. Verify the mobile app successfully inserted the record
       final response = await Supabase.instance.client
           .from('desktop_devices')
