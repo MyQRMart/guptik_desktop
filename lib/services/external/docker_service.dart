@@ -13,42 +13,34 @@ class DockerService {
   }) async {
     if (_vaultPath == null) throw Exception("Vault path is not initialized");
 
-    // PRE-CREATE DIRECTORIES: Prevents strict Linux Docker permission errors
-    Directory('$_vaultPath/data/postgres').createSync(recursive: true);
-    Directory('$_vaultPath/data/ollama').createSync(recursive: true);
+    final requiredDirs = [
+      '$_vaultPath/data/postgres',
+      '$_vaultPath/data/ollama',
+      '$_vaultPath/vault_files', 
+      '$_vaultPath/gateway'
+    ];
 
-    // 1. Generate .env
+    for (var path in requiredDirs) {
+      final dir = Directory(path);
+      if (!dir.existsSync()) await dir.create(recursive: true);
+    }
+
+    // 1. GENERATE GATEWAY (With the new LIST Endpoint)
+    await _generateGatewayFiles(publicUrl);
+
+    // 2. Generate .env
     final envFile = File('$_vaultPath/.env');
-    final content = '''
+    await envFile.writeAsString('''
 POSTGRES_PASSWORD=$dbPass
 POSTGRES_PORT=55432
 CF_TUNNEL_TOKEN=$tunnelToken
 PUBLIC_URL=$publicUrl
 VAULT_PATH=$_vaultPath
-''';
-    await envFile.writeAsString(content);
-    
-    // 2. Generate kong.yml (Routing Gateway)
-    final kongFile = File('$_vaultPath/kong.yml');
-    await kongFile.writeAsString('''
-_format_version: "1.1"
-services:
-  - name: vault
-    url: http://db:55432
-    routes:
-      - name: vault-route
-        paths: [/vault]
-  - name: ai
-    url: http://ollama:55434
-    routes:
-      - name: ai-route
-        paths: [/ai]
 ''');
 
     // 3. Generate docker-compose.yml
     final composeFile = File('$_vaultPath/docker-compose.yml');
     await composeFile.writeAsString('''
-version: '3.8'
 services:
   guptik-tunnel:
     image: cloudflare/cloudflared:latest
@@ -57,52 +49,133 @@ services:
       - TUNNEL_TOKEN=\${CF_TUNNEL_TOKEN}
     command: tunnel --no-autoupdate run
 
-  kong:
-    image: supabase/kong:2.8.1
+  gateway:
+    image: dart:stable
+    working_dir: /app
     ports:
-      - "55000:8000"
-    environment:
-      KONG_DATABASE: "off"
-      KONG_DECLARATIVE_CONFIG: /var/lib/kong/kong.yml
+      - "55000:8080"
     volumes:
-      - ./kong.yml:/var/lib/kong/kong.yml
+      - ./gateway:/app
+      - ./vault_files:/app/storage
+    command: sh -c "dart pub get && dart run server.dart"
     depends_on:
       - db
+      - ollama
 
   db:
     image: supabase/postgres:15.1.1.78
     ports:
-      - "\${POSTGRES_PORT}:55432"
+      - "\${POSTGRES_PORT}:5432"
     environment:
       POSTGRES_PASSWORD: \${POSTGRES_PASSWORD}
     volumes:
       - ./data/postgres:/var/lib/postgresql/data
-      - \${VAULT_PATH}:/media/vault
 
   ollama:
     image: ollama/ollama:latest
     restart: unless-stopped
+    ports:
+      - "55434:11434"
     volumes:
       - ./data/ollama:/root/.ollama
+''');
+  }
+
+  Future<void> _generateGatewayFiles(String publicUrl) async {
+    final pubspec = File('$_vaultPath/gateway/pubspec.yaml');
+    await pubspec.writeAsString('''
+name: guptik_gateway
+environment: {sdk: '>=3.0.0 <4.0.0'}
+dependencies: {shelf: ^1.4.0, shelf_router: ^1.1.0, http: ^1.1.0, mime: ^1.0.4}
+''');
+
+    final server = File('$_vaultPath/gateway/server.dart');
+    await server.writeAsString(r'''
+import 'dart:io';
+import 'dart:convert';
+import 'package:shelf/shelf.dart';
+import 'package:shelf/shelf_io.dart';
+import 'package:shelf_router/shelf_router.dart';
+import 'package:http/http.dart' as http;
+import 'package:mime/mime.dart';
+
+void main() async {
+  final router = Router();
+
+  // 1. AI Proxy
+  router.post('/guptik/chat', (Request req) async {
+    try {
+      final payload = await req.readAsString();
+      final response = await http.post(
+        Uri.parse('http://ollama:11434/api/generate'),
+        headers: {'Content-Type': 'application/json'},
+        body: payload
+      );
+      return Response.ok(response.body, headers: {'Content-Type': 'application/json'});
+    } catch (e) {
+      return Response.internalServerError(body: 'AI Offline');
+    }
+  });
+
+  // 2. Upload File
+  router.post('/vault/upload/<filename>', (Request req, String filename) async {
+    final file = File('/app/storage/$filename');
+    await req.read().pipe(file.openWrite());
+    return Response.ok(jsonEncode({'status': 'saved', 'path': filename}));
+  });
+  
+  // 3. Download File
+  router.get('/vault/files/<filename>', (Request req, String filename) async {
+    final file = File('/app/storage/$filename');
+    if (!await file.exists()) return Response.notFound('File not found');
+    final mimeType = lookupMimeType(file.path) ?? 'application/octet-stream';
+    return Response.ok(file.openRead(), headers: {'Content-Type': mimeType});
+  });
+
+  // 4. LIST FILES (New Endpoint for Mobile App)
+  router.get('/vault/list', (Request req) {
+    final dir = Directory('/app/storage');
+    if (!dir.existsSync()) return Response.ok('[]');
+    
+    final files = dir.listSync().whereType<File>().map((f) => {
+      'name': f.uri.pathSegments.last,
+      'size': f.lengthSync(),
+      'modified': f.lastModifiedSync().toIso8601String()
+    }).toList();
+    
+    return Response.ok(jsonEncode(files), headers: {'Content-Type': 'application/json'});
+  });
+
+  router.get('/', (Request req) => Response.ok('GUPTIK GATEWAY ONLINE'));
+
+  final handler = Pipeline().addMiddleware(logRequests()).addHandler(router.call);
+  final server = await serve(handler, InternetAddress.anyIPv4, 8080);
+  print('Gateway listening on port ${server.port}');
+}
 ''');
   }
 
   Future<void> startStack() async {
     if (_vaultPath == null) throw Exception("Vault path not set");
     
-    // THE FIX: Set the working directory natively via the Shell parameters
-    final vaultShell = Shell(workingDirectory: _vaultPath);
+    final shell = Shell(
+      workingDirectory: _vaultPath, 
+      environment: Platform.environment,
+      throwOnError: false
+    );
     
-    try {
-      // First try the modern Docker Compose command (v2)
-      await vaultShell.run('docker compose up -d');
-    } catch (e) {
-      try {
-        // Fallback to the older Docker Compose command (v1)
-        await vaultShell.run('docker-compose up -d');
-      } catch (fallbackError) {
-        throw Exception("Failed to start Docker. Is Docker installed and running? Error: $fallbackError");
-      }
+    String dockerCmd = 'docker';
+    if (Platform.isLinux || Platform.isMacOS) {
+      final which = await shell.run('which docker');
+      if (which.first.exitCode == 0) dockerCmd = which.first.stdout.toString().trim();
+    }
+
+    await shell.run('$dockerCmd compose pull');
+    // Added --build to force the Gateway to pick up the new server.dart code
+    final result = await shell.run('$dockerCmd compose up -d --build --remove-orphans');
+
+    if (result.first.exitCode != 0) {
+      throw Exception("Launch Failed: ${result.first.stderr}");
     }
   }
 }

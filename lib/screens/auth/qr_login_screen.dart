@@ -137,7 +137,19 @@ class _QrLoginScreenState extends State<QrLoginScreen> {
                   ? const CircularProgressIndicator()
                   : QrImageView(data: qrData, size: 280, version: QrVersions.auto),
             ),
-            const SizedBox(height: 50),
+            const SizedBox(height: 15), // Space below the QR code
+            // --- ADD THIS BLOCK ---
+            if (_deviceId != null)
+              Text(
+                "DEVICE ID: $_deviceId",
+                style: const TextStyle(
+                  color: Colors.cyanAccent, 
+                  fontFamily: 'Courier', 
+                  fontWeight: FontWeight.bold,
+                  letterSpacing: 2,
+                ),
+              ),
+            const SizedBox(height: 35),
             SizedBox(
               width: 250,
               height: 55,

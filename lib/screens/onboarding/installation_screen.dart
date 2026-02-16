@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 import 'package:guptik_desktop/services/supabase_service.dart';
 import '../../services/external/docker_service.dart';
 import '../dashboard/dashboard_screen.dart';
+import '../../services/storage_service.dart';
 
 class InstallationScreen extends StatefulWidget {
   final String deviceId;
@@ -70,6 +71,23 @@ class _InstallationScreenState extends State<InstallationScreen> {
       // 3. Start the Docker Stack
       _addLog("Launching Docker containers (Ollama, Kong, Postgres)...");
       await _dockerService.startStack();
+
+      // 5. Save Session Locally (Fixes the Redirect Issue)
+      // Retrieve user_id first if you don't have it in a variable
+      final deviceData = await SupabaseService()
+          .client
+          .from('desktop_devices')
+          .select('user_id')
+          .eq('device_id', widget.deviceId)
+          .single();
+
+
+          
+      await StorageService().saveSession(
+        deviceId: widget.deviceId,
+        userId: deviceData['user_id'],
+        publicUrl: publicUrl,
+      );
 
       _addLog("SUCCESS: Installation Complete!");
       setState(() => _isFinished = true);
