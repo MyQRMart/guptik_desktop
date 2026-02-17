@@ -1,7 +1,7 @@
 import 'package:flutter/material.dart';
 import 'package:lucide_icons/lucide_icons.dart';
-import '../../models/conversation.dart';
-import '../../services/supabase_service.dart';
+import '../../models/whatsapp/wa_conversation.dart';
+import '../../services/whatsapp/wa_conversation_service.dart';
 import 'whatsapp_chat_screen.dart';
 
 class WhatsAppScreen extends StatefulWidget {
@@ -12,7 +12,7 @@ class WhatsAppScreen extends StatefulWidget {
 }
 
 class _WhatsAppScreenState extends State<WhatsAppScreen> {
-  late final SupabaseService _supabaseService;
+  late final ConversationService _conversationService;
   late Future<List<Conversation>> _conversationsFuture;
   String _searchQuery = '';
   Conversation? _selectedConversation;
@@ -20,20 +20,34 @@ class _WhatsAppScreenState extends State<WhatsAppScreen> {
   @override
   void initState() {
     super.initState();
-    _supabaseService = SupabaseService();
-    _conversationsFuture = _supabaseService.getConversations();
+    _conversationService = ConversationService();
+    _refreshConversations();
   }
 
-  void _selectConversation(Conversation conversation) {
+  void _refreshConversations() {
+    setState(() {
+      // Fetches all conversations (individual + group) sorted by time
+      _conversationsFuture = _conversationService.getConversations();
+    });
+  }
+
+  void _selectConversation(Conversation conversation) async {
     setState(() {
       _selectedConversation = conversation;
     });
+    
+    // Mark as read immediately upon selection
+    if (conversation.isUnread) {
+      await _conversationService.markAsRead(conversation.id);
+      _refreshConversations(); // Refresh UI to remove unread dot
+    }
   }
 
   void _goBack() {
     setState(() {
       _selectedConversation = null;
     });
+    _refreshConversations(); // Refresh list when returning
   }
 
   @override
@@ -47,9 +61,9 @@ class _WhatsAppScreenState extends State<WhatsAppScreen> {
 
     return Row(
       children: [
-        // CONVERSATIONS LIST
+        // CONVERSATIONS LIST SIDEBAR
         Container(
-          width: 320,
+          width: 350,
           decoration: BoxDecoration(
             color: const Color(0xFF1E293B),
             border: Border(right: BorderSide(color: Colors.white.withOpacity(0.1))),
@@ -58,42 +72,42 @@ class _WhatsAppScreenState extends State<WhatsAppScreen> {
             children: [
               // Header
               Padding(
-                padding: const EdgeInsets.all(16.0),
+                padding: const EdgeInsets.all(20.0),
                 child: Column(
                   crossAxisAlignment: CrossAxisAlignment.start,
                   children: [
-                    const Text(
-                      'WhatsApp',
-                      style: TextStyle(
-                        fontSize: 28,
-                        fontWeight: FontWeight.bold,
-                        color: Colors.white,
-                      ),
+                    Row(
+                      mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                      children: [
+                        const Text(
+                          'WhatsApp',
+                          style: TextStyle(
+                            fontSize: 24,
+                            fontWeight: FontWeight.bold,
+                            color: Colors.white,
+                          ),
+                        ),
+                        IconButton(
+                          onPressed: _refreshConversations,
+                          icon: const Icon(LucideIcons.refreshCw, size: 20, color: Colors.grey),
+                          tooltip: 'Refresh',
+                        ),
+                      ],
                     ),
                     const SizedBox(height: 16),
                     // Search Bar
                     TextField(
-                      onChanged: (value) {
-                        setState(() => _searchQuery = value.toLowerCase());
-                      },
+                      onChanged: (value) => setState(() => _searchQuery = value.toLowerCase()),
                       decoration: InputDecoration(
-                        hintText: 'Search conversations...',
-                        hintStyle: TextStyle(color: Colors.grey.shade600),
-                        prefixIcon: const Icon(LucideIcons.search, color: Colors.grey),
+                        hintText: 'Search chats...',
+                        hintStyle: TextStyle(color: Colors.grey.shade500),
+                        prefixIcon: const Icon(LucideIcons.search, color: Colors.grey, size: 20),
                         filled: true,
-                        fillColor: Colors.white.withOpacity(0.05),
+                        fillColor: Colors.black.withOpacity(0.2),
                         contentPadding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
                         border: OutlineInputBorder(
-                          borderRadius: BorderRadius.circular(20),
-                          borderSide: BorderSide(color: Colors.white.withOpacity(0.1)),
-                        ),
-                        enabledBorder: OutlineInputBorder(
-                          borderRadius: BorderRadius.circular(20),
-                          borderSide: BorderSide(color: Colors.white.withOpacity(0.1)),
-                        ),
-                        focusedBorder: OutlineInputBorder(
-                          borderRadius: BorderRadius.circular(20),
-                          borderSide: const BorderSide(color: Colors.cyanAccent),
+                          borderRadius: BorderRadius.circular(12),
+                          borderSide: BorderSide.none,
                         ),
                       ),
                       style: const TextStyle(color: Colors.white),
@@ -107,53 +121,32 @@ class _WhatsAppScreenState extends State<WhatsAppScreen> {
                   future: _conversationsFuture,
                   builder: (context, snapshot) {
                     if (snapshot.connectionState == ConnectionState.waiting) {
-                      return const Center(
-                        child: CircularProgressIndicator(color: Colors.cyanAccent),
-                      );
+                      return const Center(child: CircularProgressIndicator(color: Colors.cyanAccent));
                     }
-
                     if (snapshot.hasError) {
-                      return Center(
-                        child: Text(
-                          'Error loading conversations',
-                          style: TextStyle(color: Colors.red.shade400),
-                        ),
-                      );
+                      return Center(child: Text('Error: ${snapshot.error}', style: const TextStyle(color: Colors.red)));
                     }
 
                     final conversations = snapshot.data ?? [];
-                    final filtered = conversations
-                        .where((c) =>
-                            (c.contactName?.toLowerCase().contains(_searchQuery) ?? false) ||
-                            c.phoneNumber.contains(_searchQuery))
-                        .toList();
+                    final filtered = conversations.where((c) {
+                      final name = c.contactName?.toLowerCase() ?? '';
+                      final phone = c.phoneNumber.toLowerCase();
+                      return name.contains(_searchQuery) || phone.contains(_searchQuery);
+                    }).toList();
 
                     if (filtered.isEmpty) {
                       return Center(
-                        child: Column(
-                          mainAxisAlignment: MainAxisAlignment.center,
-                          children: [
-                            Icon(
-                              LucideIcons.messageCircle,
-                              size: 48,
-                              color: Colors.grey.shade600,
-                            ),
-                            const SizedBox(height: 16),
-                            Text(
-                              _searchQuery.isEmpty ? 'No conversations' : 'No matches found',
-                              style: TextStyle(color: Colors.grey.shade500),
-                            ),
-                          ],
+                        child: Text(
+                          _searchQuery.isEmpty ? 'No conversations found' : 'No matches',
+                          style: TextStyle(color: Colors.grey.shade500),
                         ),
                       );
                     }
 
-                    return ListView.builder(
+                    return ListView.separated(
                       itemCount: filtered.length,
-                      itemBuilder: (context, index) {
-                        final conversation = filtered[index];
-                        return _buildConversationTile(conversation);
-                      },
+                      separatorBuilder: (c, i) => Divider(color: Colors.white.withOpacity(0.05), height: 1),
+                      itemBuilder: (context, index) => _buildConversationTile(filtered[index]),
                     );
                   },
                 ),
@@ -161,29 +154,20 @@ class _WhatsAppScreenState extends State<WhatsAppScreen> {
             ],
           ),
         ),
-        // EMPTY STATE OR CHAT AREA
+        // EMPTY STATE (Right Side)
         Expanded(
           child: Container(
             color: const Color(0xFF0F172A),
-            child: Center(
-              child: Column(
-                mainAxisAlignment: MainAxisAlignment.center,
-                children: [
-                  Icon(
-                    LucideIcons.messageCircle,
-                    size: 80,
-                    color: Colors.grey.shade700,
-                  ),
-                  const SizedBox(height: 24),
-                  const Text(
-                    'Select a conversation to start',
-                    style: TextStyle(
-                      fontSize: 18,
-                      color: Colors.grey,
-                    ),
-                  ),
-                ],
-              ),
+            child: Column(
+              mainAxisAlignment: MainAxisAlignment.center,
+              children: [
+                Icon(LucideIcons.messageSquare, size: 80, color: Colors.grey.shade800),
+                const SizedBox(height: 24),
+                Text(
+                  'Select a conversation',
+                  style: TextStyle(fontSize: 18, color: Colors.grey.shade600),
+                ),
+              ],
             ),
           ),
         ),
@@ -196,56 +180,84 @@ class _WhatsAppScreenState extends State<WhatsAppScreen> {
       color: Colors.transparent,
       child: InkWell(
         onTap: () => _selectConversation(conversation),
-        child: Container(
-          padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
-          decoration: BoxDecoration(
-            color: Colors.white.withOpacity(0.02),
-            border: Border(bottom: BorderSide(color: Colors.white.withOpacity(0.05))),
-          ),
-          child: Column(
-            crossAxisAlignment: CrossAxisAlignment.start,
+        child: Padding(
+          padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 16),
+          child: Row(
             children: [
-              Row(
-                mainAxisAlignment: MainAxisAlignment.spaceBetween,
-                children: [
-                  Text(
-                    conversation.contactName ?? conversation.phoneNumber,
-                    style: const TextStyle(
-                      fontWeight: FontWeight.w600,
-                      color: Colors.white,
-                      fontSize: 14,
-                    ),
-                    maxLines: 1,
-                    overflow: TextOverflow.ellipsis,
+              // Avatar
+              CircleAvatar(
+                radius: 24,
+                backgroundColor: conversation.isGroup ? Colors.orange.withOpacity(0.2) : Colors.cyanAccent.withOpacity(0.2),
+                child: Text(
+                  conversation.initials,
+                  style: TextStyle(
+                    color: conversation.isGroup ? Colors.orangeAccent : Colors.cyanAccent,
+                    fontWeight: FontWeight.bold,
                   ),
-                  if (conversation.isUnread)
-                    Container(
-                      width: 12,
-                      height: 12,
-                      decoration: const BoxDecoration(
-                        color: Colors.greenAccent,
-                        shape: BoxShape.circle,
-                      ),
-                    ),
-                ],
-              ),
-              const SizedBox(height: 6),
-              Text(
-                conversation.lastMessage ?? 'No messages',
-                style: TextStyle(
-                  color: Colors.grey.shade400,
-                  fontSize: 12,
-                  fontStyle: conversation.lastMessage == null ? FontStyle.italic : FontStyle.normal,
                 ),
-                maxLines: 1,
-                overflow: TextOverflow.ellipsis,
               ),
-              const SizedBox(height: 6),
-              Text(
-                conversation.lastMessageTime,
-                style: TextStyle(
-                  color: Colors.grey.shade600,
-                  fontSize: 10,
+              const SizedBox(width: 16),
+              // Content
+              Expanded(
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Row(
+                      mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                      children: [
+                        Flexible(
+                          child: Text(
+                            conversation.displayName,
+                            style: TextStyle(
+                              fontWeight: conversation.isUnread ? FontWeight.bold : FontWeight.w500,
+                              color: Colors.white,
+                              fontSize: 15,
+                            ),
+                            maxLines: 1,
+                            overflow: TextOverflow.ellipsis,
+                          ),
+                        ),
+                        Text(
+                          _formatDate(conversation.timestamp),
+                          style: TextStyle(
+                            color: conversation.isUnread ? Colors.greenAccent : Colors.grey.shade600,
+                            fontSize: 11,
+                            fontWeight: conversation.isUnread ? FontWeight.bold : FontWeight.normal,
+                          ),
+                        ),
+                      ],
+                    ),
+                    const SizedBox(height: 4),
+                    Row(
+                      children: [
+                        if (conversation.isGroup) ...[
+                           Icon(LucideIcons.bot, size: 12, color: Colors.grey.shade500),
+                           const SizedBox(width: 4),
+                        ],
+                        Expanded(
+                          child: Text(
+                            conversation.lastMessage ?? 'No messages',
+                            style: TextStyle(
+                              color: conversation.isUnread ? Colors.white70 : Colors.grey.shade500,
+                              fontSize: 13,
+                            ),
+                            maxLines: 1,
+                            overflow: TextOverflow.ellipsis,
+                          ),
+                        ),
+                        if (conversation.isUnread)
+                          Container(
+                            margin: const EdgeInsets.only(left: 8),
+                            width: 8,
+                            height: 8,
+                            decoration: const BoxDecoration(
+                              color: Colors.greenAccent,
+                              shape: BoxShape.circle,
+                            ),
+                          ),
+                      ],
+                    ),
+                  ],
                 ),
               ),
             ],
@@ -253,5 +265,13 @@ class _WhatsAppScreenState extends State<WhatsAppScreen> {
         ),
       ),
     );
+  }
+
+  String _formatDate(DateTime date) {
+    final now = DateTime.now();
+    if (now.day == date.day && now.month == date.month && now.year == date.year) {
+      return '${date.hour.toString().padLeft(2, '0')}:${date.minute.toString().padLeft(2, '0')}';
+    }
+    return '${date.day}/${date.month}';
   }
 }
