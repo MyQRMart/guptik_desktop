@@ -249,14 +249,15 @@ class _WhatsAppChatScreenState extends State<WhatsAppChatScreen> {
                   message.formattedTime,
                   style: TextStyle(color: Colors.white.withOpacity(0.6), fontSize: 10),
                 ),
-                if (isMe) ...[
-                  const SizedBox(width: 4),
-                  Icon(
-                    message.isRead ? LucideIcons.checkCheck : LucideIcons.check,
-                    size: 12,
-                    color: message.isRead ? Colors.cyanAccent : Colors.white60,
-                  ),
-                ],
+                  if (isMe)
+                    Padding(
+                      padding: const EdgeInsets.only(left: 4.0),
+                      child: Icon(
+                        message.status == 'delivered' ? LucideIcons.check : LucideIcons.check,
+                        size: 12,
+                        color: message.status == 'delivered' ? Colors.white70 : Colors.white,
+                      ),
+                    )
               ],
             ),
           ],

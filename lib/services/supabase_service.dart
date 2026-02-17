@@ -19,12 +19,28 @@ class SupabaseService {
   }
 
   SupabaseService._internal();
-
   SupabaseClient get client => _supabase;
-
   final SupabaseClient _supabase = Supabase.instance.client;
 
   String? get currentUserId => _supabase.auth.currentUser?.id;
+
+  Future<Map<String, dynamic>?> getUserApiSettings() async {
+    try {
+      final userId = currentUserId;
+      if (userId == null) return null;
+
+      final response = await _supabase
+          .from('user_api_settings')
+          .select()
+          .eq('user_id', userId)
+          .maybeSingle();
+      
+      return response;
+    } catch (e) {
+      print('Error fetching API settings: $e');
+      return null;
+    }
+  }
 
   // ============== N8N TRIGGER FIX ==============
 
@@ -149,22 +165,23 @@ class SupabaseService {
   }
 
   // ============== WHATSAPP CONVERSATIONS ==============
-
   Future<List<Conversation>> getConversations() async {
     try {
-      final userId = currentUserId;
-      if (userId == null) throw Exception('User not authenticated');
+      // FIX: Use effective user ID instead of direct auth
+      final userId = await currentUserId;
+      if (userId == null) throw Exception('Device not linked to any user');
 
       final response = await _supabase
           .from('conversations')
           .select()
           .eq('user_id', userId)
-          .order('updated_at', ascending: false);
+          .order('last_message_time', ascending: false); // Ordered by last message
 
       return (response as List)
           .map((json) => Conversation.fromJson(json as Map<String, dynamic>))
           .toList();
     } catch (e) {
+      print('Error fetching conversations: $e');
       throw Exception('Error fetching conversations: $e');
     }
   }
@@ -183,31 +200,6 @@ class SupabaseService {
     }
   }
 
-  Future<Conversation> createConversation(Conversation conversation) async {
-    try {
-      final response = await _supabase
-          .from('conversations')
-          .insert(conversation.toJson())
-          .select()
-          .single();
-
-      return Conversation.fromJson(response);
-    } catch (e) {
-      throw Exception('Error creating conversation: $e');
-    }
-  }
-
-  Future<void> updateConversation(String id, Map<String, dynamic> updates) async {
-    try {
-      await _supabase
-          .from('conversations')
-          .update(updates)
-          .eq('id', id);
-    } catch (e) {
-      throw Exception('Error updating conversation: $e');
-    }
-  }
-
   // ============== WHATSAPP MESSAGES ==============
 
   Future<List<Message>> getMessages(String conversationId) async {
@@ -216,7 +208,7 @@ class SupabaseService {
           .from('messages')
           .select()
           .eq('conversation_id', conversationId)
-          .order('created_at', ascending: true);
+          .order('timestamp', ascending: true); // Ordered by timestamp
 
       return (response as List)
           .map((json) => Message.fromJson(json as Map<String, dynamic>))
@@ -239,18 +231,6 @@ class SupabaseService {
       throw Exception('Error creating message: $e');
     }
   }
-
-  Future<void> updateMessageStatus(String id, String status) async {
-    try {
-      await _supabase
-          .from('messages')
-          .update({'status': status})
-          .eq('id', id);
-    } catch (e) {
-      throw Exception('Error updating message status: $e');
-    }
-  }
-
   // ============== HOME CONTROL - HOMES ==============
 
   Future<List<Home>> getHomes() async {

@@ -45,6 +45,7 @@ class Conversation {
       contactEmail: map['contact_email'] as String?,
       contactNotes: map['contact_notes'] as String?,
       lastMessage: map['last_message'] as String?,
+      // FIXED: robust date parsing
       lastMessageTime: _safeParseDateTime(map['last_message_time']),
       isUnread: (map['is_unread'] as bool?) ?? true,
       isArchived: (map['is_archived'] as bool?) ?? false,
@@ -58,7 +59,12 @@ class Conversation {
     if (value == null) return null;
     
     try {
-      return DateTime.parse(value as String).toLocal();
+      String dateStr = value.toString();
+      // Fix Postgres format "2026-01-28 04:05:12" -> "2026-01-28T04:05:12"
+      if (dateStr.contains(' ') && !dateStr.contains('T')) {
+        dateStr = dateStr.replaceFirst(' ', 'T');
+      }
+      return DateTime.parse(dateStr).toLocal();
     } catch (e) {
       if (kDebugMode) {
         print('Error parsing datetime: $value, error: $e');
@@ -79,40 +85,6 @@ class Conversation {
     return ConversationStatus.active;
   }
 
-  Conversation copyWith({
-    String? id,
-    String? userId,
-    String? aiAgentId,
-    String? phoneNumber,
-    String? contactName,
-    String? contactEmail,
-    String? contactNotes,
-    String? lastMessage,
-    DateTime? lastMessageTime,
-    bool? isUnread,
-    bool? isArchived,
-    DateTime? createdAt,
-    DateTime? updatedAt,
-    ConversationStatus? status,
-  }) {
-    return Conversation(
-      id: id ?? this.id,
-      userId: userId ?? this.userId,
-      aiAgentId: aiAgentId ?? this.aiAgentId,
-      phoneNumber: phoneNumber ?? this.phoneNumber,
-      contactName: contactName ?? this.contactName,
-      contactEmail: contactEmail ?? this.contactEmail,
-      contactNotes: contactNotes ?? this.contactNotes,
-      lastMessage: lastMessage ?? this.lastMessage,
-      lastMessageTime: lastMessageTime ?? this.lastMessageTime,
-      isUnread: isUnread ?? this.isUnread,
-      isArchived: isArchived ?? this.isArchived,
-      createdAt: createdAt ?? this.createdAt,
-      updatedAt: updatedAt ?? this.updatedAt,
-      status: status ?? this.status,
-    );
-  }
-
   // Computed properties for UI compatibility
   bool get isGroup => aiAgentId != null;
 
@@ -129,8 +101,6 @@ class Conversation {
   }
 
   String get displayName => contactName?.isNotEmpty == true ? contactName! : phoneNumber;
-
-  String get displayPhoneOrMembers => phoneNumber;
-
+  
   DateTime get timestamp => lastMessageTime ?? createdAt;
 }
