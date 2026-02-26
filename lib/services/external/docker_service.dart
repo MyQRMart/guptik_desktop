@@ -67,12 +67,14 @@ services:
       - ollama
 
   db:
-    image: supabase/postgres:15.1.1.78
+    image: postgres:15-alpine # <--- SWITCHED TO FAST, LIGHTWEIGHT POSTGRES
     restart: always
     ports:
       - "\${POSTGRES_PORT}:5432"
     environment:
+      POSTGRES_USER: postgres
       POSTGRES_PASSWORD: \${POSTGRES_PASSWORD}
+      POSTGRES_DB: postgres
     volumes:
       - ./data/postgres:/var/lib/postgresql/data
 
@@ -196,6 +198,28 @@ void main() async {
   print('Gateway listening on port ${server.port}');
 }
 ''');
+  }
+
+
+  Future<void> stopStack() async {
+    try {
+      if (_vaultPath == null) throw Exception("Vault path not set"); // <--- Added underscore
+      
+      // Run docker-compose down
+      final result = await Process.run(
+        'docker-compose',
+        ['-f', 'docker-compose.yml', 'down'],
+        workingDirectory: _vaultPath, // <--- Added underscore
+      );
+      
+      if (result.exitCode != 0) {
+        print("Error stopping Docker: ${result.stderr}");
+      } else {
+        print("Docker Stack stopped successfully.");
+      }
+    } catch (e) {
+      print("Kill Switch Exception: $e");
+    }
   }
 
   Future<void> startStack() async {

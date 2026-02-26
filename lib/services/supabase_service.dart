@@ -42,6 +42,29 @@ class SupabaseService {
     }
   }
 
+
+  Future<void> registerDesktopDevice({
+    required String deviceId, 
+    required String userId,
+    required String modelName
+  }) async {
+    try {
+      // Upsert: Update if exists, Insert if new
+      await _supabase.from('desktop_devices').upsert({
+        'device_id': deviceId,
+        'user_id': userId,
+        'device_model': modelName,
+        'status': 'online',
+        'last_active_at': DateTime.now().toIso8601String(),
+      }, onConflict: 'device_id');
+      
+      print("Device registered with Supabase: $deviceId");
+    } catch (e) {
+      throw Exception('Failed to register device: $e');
+    }
+  }
+
+
   // ============== N8N TRIGGER FIX ==============
 
   Future<void> triggerN8nWebhook(String deviceId) async {

@@ -97,7 +97,7 @@ class MessageService {
   }) async {
     try {
       final response = await _supabase
-          .from('messages')
+          .from('wa_messages')
           .select()
           .eq('conversation_id', conversationId)
           .order('timestamp', ascending: ascending)
@@ -131,7 +131,7 @@ class MessageService {
       
       // 1. Insert message to database
       final message = await _supabase
-          .from('messages')
+          .from('wa_messages')
           .insert({
             'conversation_id': conversationId,
             'message_id': messageId,
@@ -165,7 +165,7 @@ class MessageService {
       final updatedStatus = whatsappSent ? 'sent' : 'failed';
       
       await _supabase
-          .from('messages')
+          .from('wa_messages')
           .update({
             'status': updatedStatus,
             'status_timestamp': now.toIso8601String(),
@@ -339,7 +339,7 @@ class MessageService {
 
       // 1. Insert to database
       final message = await _supabase
-          .from('messages')
+          .from('wa_messages')
           .insert({
             'conversation_id': conversationId,
             'message_id': messageId,
@@ -375,7 +375,7 @@ class MessageService {
       final updatedStatus = whatsappSent ? 'sent' : 'failed';
       
       await _supabase
-          .from('messages')
+          .from('wa_messages')
           .update({
             'status': updatedStatus,
             'status_timestamp': now.toIso8601String(),
@@ -478,7 +478,7 @@ class MessageService {
   ) async {
     try {
       await _supabase
-          .from('conversations')
+          .from('wa_conversations')
           .update({
             'last_message': lastMessage,
             'last_message_time': DateTime.now().toIso8601String(),
@@ -495,7 +495,7 @@ class MessageService {
   Future<void> markMessagesAsRead(String conversationId) async {
     try {
       await _supabase
-          .from('messages')
+          .from('wa_messages')
           .update({
             'status': 'read',
             'updated_at': DateTime.now().toUtc().toIso8601String(),
@@ -517,7 +517,7 @@ class MessageService {
   Future<void> deleteMessage(String messageId) async {
     try {
       await _supabase
-          .from('messages')
+          .from('wa_messages')
           .delete()
           .eq('message_id', messageId);
     } catch (e) {
@@ -530,7 +530,7 @@ class MessageService {
   Future<int> getUnreadCount(String conversationId) async {
     try {
       final response = await _supabase
-          .from('messages')
+          .from('wa_messages')
           .select('id')
           .eq('conversation_id', conversationId)
           .eq('direction', 'incoming')

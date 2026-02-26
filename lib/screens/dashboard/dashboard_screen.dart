@@ -5,6 +5,7 @@ import '../vault/vault_screen.dart';
 import '../trust_me/trust_me_screen.dart';
 import '../whatsapp/whatsapp_screen.dart';
 import '../home_control/home_control_screen.dart';
+import '../guptik/guptik_screen.dart'; // <--- ADD THIS IMPORT
 import '../../widgets/window_header.dart';
 
 class DashboardScreen extends StatefulWidget {
@@ -23,9 +24,9 @@ class _DashboardScreenState extends State<DashboardScreen> {
     WhatsAppScreen(),
     VaultScreen(),
     TrustMeScreen(),
-    Center(child: Text("Guptik AI UI", style: TextStyle(color: Colors.white))), 
+    GuptikScreen(),
     Center(child: Text("Security UI", style: TextStyle(color: Colors.white))), 
-    SettingsScreen(), // Added Settings Screen at Index 6
+    SettingsScreen(),
   ];
 
   final List<String> _screenLabels = [
@@ -35,7 +36,7 @@ class _DashboardScreenState extends State<DashboardScreen> {
     'Trust Me',
     'Guptik AI',
     'Security',
-    'Settings', // Added label
+    'Settings',
   ];
 
   final List<IconData> _screenIcons = [

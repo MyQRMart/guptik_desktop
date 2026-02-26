@@ -1,7 +1,8 @@
 import 'package:flutter/material.dart';
-import 'package:flutter/services.dart';
-import '../../services/storage_service.dart';
-import '../auth/qr_login_screen.dart';
+import 'package:shared_preferences/shared_preferences.dart';
+import 'package:supabase_flutter/supabase_flutter.dart';
+import '../../services/external/docker_service.dart';
+import '../auth/login_screen.dart'; // Ensure this points to your new LoginScreen
 
 class SettingsScreen extends StatefulWidget {
   const SettingsScreen({super.key});
@@ -11,179 +12,148 @@ class SettingsScreen extends StatefulWidget {
 }
 
 class _SettingsScreenState extends State<SettingsScreen> {
-  final StorageService _storage = StorageService();
-  String? _deviceId;
-  String? _userId;
-  String? _publicUrl;
-  bool _isLoading = true;
+  bool _isKilling = false;
 
-  @override
-  void initState() {
-    super.initState();
-    _loadData();
-  }
-
-  Future<void> _loadData() async {
-    final deviceId = await _storage.getDeviceId();
-    final userId = await _storage.getUserId();
-    final publicUrl = await _storage.getPublicUrl();
-
-    if (mounted) {
-      setState(() {
-        _deviceId = deviceId;
-        _userId = userId;
-        _publicUrl = publicUrl;
-        _isLoading = false;
-      });
-    }
-  }
-
-  Future<void> _handleFactoryReset() async {
-    final confirm = await showDialog<bool>(
+  Future<void> _activateKillSwitch() async {
+    // Confirm before killing
+    final bool? confirm = await showDialog<bool>(
       context: context,
-      builder: (ctx) => AlertDialog(
+      builder: (context) => AlertDialog(
         backgroundColor: const Color(0xFF1E293B),
-        title: const Text("Factory Reset?", style: TextStyle(color: Colors.redAccent)),
+        title: const Row(
+          children: [
+            Icon(Icons.warning_amber_rounded, color: Colors.redAccent),
+            SizedBox(width: 10),
+            Text("EMERGENCY KILL", style: TextStyle(color: Colors.redAccent, fontWeight: FontWeight.bold)),
+          ],
+        ),
         content: const Text(
-          "This will disconnect this device from your account. Local files will remain, but remote access will be disabled.",
-          style: TextStyle(color: Colors.white70),
+          "This will immediately shut down all local AI, Database, and Tunnel containers, terminating the session. Proceed?",
+          style: TextStyle(color: Colors.white),
         ),
         actions: [
           TextButton(
-            onPressed: () => Navigator.pop(ctx, false),
-            child: const Text("Cancel"),
+            onPressed: () => Navigator.pop(context, false),
+            child: const Text("CANCEL", style: TextStyle(color: Colors.grey)),
           ),
           ElevatedButton(
-            style: ElevatedButton.styleFrom(backgroundColor: Colors.red),
-            onPressed: () => Navigator.pop(ctx, true),
-            child: const Text("RESET"),
+            onPressed: () => Navigator.pop(context, true),
+            style: ElevatedButton.styleFrom(backgroundColor: Colors.redAccent),
+            child: const Text("SHUT DOWN", style: TextStyle(color: Colors.white, fontWeight: FontWeight.bold)),
           ),
         ],
       ),
     );
 
-    if (confirm == true) {
-      await _storage.clearSession();
+    if (confirm != true) return;
+
+    setState(() => _isKilling = true);
+
+    try {
+      // 1. Stop all Docker Containers
+      await DockerService().stopStack();
+
+      // 2. Clear Session Info
+      final prefs = await SharedPreferences.getInstance();
+      await prefs.clear();
+
+      // 3. Sign out of Supabase
+      await Supabase.instance.client.auth.signOut();
+
+      // 4. Return to Login
       if (mounted) {
-        Navigator.of(context, rootNavigator: true).pushReplacement(
-          MaterialPageRoute(builder: (_) => const QrLoginScreen()),
+        Navigator.pushAndRemoveUntil(
+          context,
+          MaterialPageRoute(builder: (_) => const LoginScreen()),
+          (route) => false,
         );
+      }
+    } catch (e) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text("Error: $e"), backgroundColor: Colors.red));
+        setState(() => _isKilling = false);
       }
     }
   }
 
-  Widget _buildInfoCard(String title, String value, IconData icon, {bool isLink = false}) {
-    return Container(
-      margin: const EdgeInsets.only(bottom: 15),
-      padding: const EdgeInsets.all(20),
-      decoration: BoxDecoration(
-        color: const Color(0xFF1E293B),
-        borderRadius: BorderRadius.circular(12),
-        border: Border.all(color: Colors.white10),
-      ),
-      child: Row(
+  @override
+  Widget build(BuildContext context) {
+    return Padding(
+      padding: const EdgeInsets.all(40.0),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          Icon(icon, color: Colors.cyanAccent, size: 28),
-          const SizedBox(width: 20),
-          Expanded(
-            child: Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
+          const Text("SYSTEM SETTINGS", style: TextStyle(fontSize: 24, fontWeight: FontWeight.bold, letterSpacing: 2)),
+          const SizedBox(height: 40),
+
+          // Regular Settings Panel
+          Container(
+            padding: const EdgeInsets.all(20),
+            decoration: BoxDecoration(
+              color: const Color(0xFF1E293B),
+              borderRadius: BorderRadius.circular(12),
+              border: Border.all(color: Colors.white10),
+            ),
+            child: const Column(
               children: [
-                Text(
-                  title.toUpperCase(),
-                  style: const TextStyle(
-                    color: Colors.grey,
-                    fontSize: 12,
-                    fontWeight: FontWeight.bold,
-                    letterSpacing: 1.2,
-                  ),
+                ListTile(
+                  leading: Icon(Icons.person, color: Colors.cyanAccent),
+                  title: Text("Account Details"),
+                  subtitle: Text("Manage your connected user profile"),
+                  trailing: Icon(Icons.chevron_right, color: Colors.grey),
                 ),
-                const SizedBox(height: 5),
-                SelectableText(
-                  value,
-                  style: TextStyle(
-                    color: isLink ? Colors.blueAccent : Colors.white,
-                    fontSize: 16,
-                    fontFamily: 'Courier',
-                    fontWeight: FontWeight.w600,
-                  ),
+                Divider(color: Colors.white10),
+                ListTile(
+                  leading: Icon(Icons.data_usage, color: Colors.cyanAccent),
+                  title: Text("Storage Location"),
+                  subtitle: Text("View current vault and database path"),
+                  trailing: Icon(Icons.chevron_right, color: Colors.grey),
                 ),
               ],
             ),
           ),
-          IconButton(
-            icon: const Icon(Icons.copy, color: Colors.white24),
-            onPressed: () {
-              Clipboard.setData(ClipboardData(text: value));
-              ScaffoldMessenger.of(context).showSnackBar(
-                SnackBar(content: Text("Copied $title")),
-              );
-            },
-          ),
-        ],
-      ),
-    );
-  }
 
-  @override
-  Widget build(BuildContext context) {
-    if (_isLoading) return const Center(child: CircularProgressIndicator());
+          const Spacer(),
 
-    // Construct Service URLs
-    final baseUrl = "https://$_publicUrl";
-    final vaultLink = "$baseUrl/vault/files/";
-    final guptikLink = "$baseUrl/guptik/chat";
-    final trustMeLink = "$baseUrl/trust_me/status";
-
-    return Scaffold(
-      backgroundColor: const Color(0xFF0F172A),
-      body: ListView(
-        padding: const EdgeInsets.all(40),
-        children: [
-          const Text(
-            "SYSTEM SETTINGS",
-            style: TextStyle(
-              fontSize: 32,
-              fontWeight: FontWeight.bold,
-              color: Colors.white,
-              letterSpacing: 1.5,
+          // KILL SWITCH PANEL
+          Container(
+            padding: const EdgeInsets.all(24),
+            decoration: BoxDecoration(
+              color: Colors.red.withOpacity(0.05),
+              borderRadius: BorderRadius.circular(16),
+              border: Border.all(color: Colors.red.withOpacity(0.3), width: 2),
             ),
-          ),
-          const SizedBox(height: 10),
-          Text(
-            "Manage your sovereign node configuration",
-            style: TextStyle(color: Colors.grey[400], fontSize: 16),
-          ),
-          const SizedBox(height: 50),
-
-          const Text("DEVICE IDENTITY", style: TextStyle(color: Colors.cyanAccent, fontWeight: FontWeight.bold)),
-          const SizedBox(height: 15),
-          _buildInfoCard("Device ID", _deviceId ?? "Unknown", Icons.computer),
-          _buildInfoCard("Owner User ID", _userId ?? "Unknown", Icons.person_outline),
-
-          const SizedBox(height: 40),
-          const Text("PUBLIC SERVICE ENDPOINTS", style: TextStyle(color: Colors.cyanAccent, fontWeight: FontWeight.bold)),
-          const SizedBox(height: 15),
-          _buildInfoCard("Gateway Root", baseUrl, Icons.dns, isLink: true),
-          _buildInfoCard("Vault Storage API", vaultLink, Icons.storage, isLink: true),
-          _buildInfoCard("Guptik AI Agent", guptikLink, Icons.psychology, isLink: true),
-          _buildInfoCard("Trust Me Secure Channel", trustMeLink, Icons.security, isLink: true),
-
-          const SizedBox(height: 50),
-          Center(
-            child: SizedBox(
-              width: 300,
-              height: 50,
-              child: ElevatedButton.icon(
-                style: ElevatedButton.styleFrom(
-                  backgroundColor: Colors.red.withOpacity(0.1),
-                  side: const BorderSide(color: Colors.red),
-                  foregroundColor: Colors.red,
+            child: Row(
+              children: [
+                Container(
+                  padding: const EdgeInsets.all(12),
+                  decoration: BoxDecoration(color: Colors.red.withOpacity(0.2), shape: BoxShape.circle),
+                  child: const Icon(Icons.power_settings_new, color: Colors.redAccent, size: 32),
                 ),
-                icon: const Icon(Icons.delete_forever),
-                label: const Text("FACTORY RESET & DISCONNECT"),
-                onPressed: _handleFactoryReset,
-              ),
+                const SizedBox(width: 20),
+                const Expanded(
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Text("SYSTEM KILL SWITCH", style: TextStyle(color: Colors.redAccent, fontSize: 18, fontWeight: FontWeight.bold, letterSpacing: 1)),
+                      SizedBox(height: 4),
+                      Text("Instantly shuts down all background services, destroys the tunnel connection, and logs you out.", 
+                        style: TextStyle(color: Colors.grey, fontSize: 12)),
+                    ],
+                  ),
+                ),
+                SizedBox(
+                  width: 150,
+                  height: 50,
+                  child: ElevatedButton(
+                    onPressed: _isKilling ? null : _activateKillSwitch,
+                    style: ElevatedButton.styleFrom(backgroundColor: Colors.redAccent),
+                    child: _isKilling
+                      ? const SizedBox(width: 20, height: 20, child: CircularProgressIndicator(color: Colors.white, strokeWidth: 2))
+                      : const Text("ACTIVATE", style: TextStyle(color: Colors.white, fontWeight: FontWeight.bold, letterSpacing: 1)),
+                  ),
+                ),
+              ],
             ),
           ),
         ],

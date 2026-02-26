@@ -3,8 +3,10 @@ import 'package:google_fonts/google_fonts.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
 import 'package:window_manager/window_manager.dart';
 import 'services/storage_service.dart';
-import 'screens/auth/qr_login_screen.dart';
+import 'screens/auth/login_screen.dart';
 import 'screens/dashboard/dashboard_screen.dart';
+import 'package:shared_preferences/shared_preferences.dart';
+import 'screens/auth/boot_screen.dart';
 
 void main() async {
   WidgetsFlutterBinding.ensureInitialized();
@@ -32,9 +34,10 @@ void main() async {
   );
 
   // 3. Check Login State
-  final bool loggedIn = await StorageService().isLoggedIn();
+  final prefs = await SharedPreferences.getInstance();
+  final bool loggedIn = prefs.getBool('is_logged_in') ?? false;
 
-  runApp(MyApp(startScreen: loggedIn ? const DashboardScreen() : const QrLoginScreen()));
+  runApp(MyApp(startScreen: loggedIn ? const BootScreen() : const LoginScreen()));
 }
 
 class MyApp extends StatelessWidget {

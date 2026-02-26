@@ -6,6 +6,7 @@ import 'package:shared_preferences/shared_preferences.dart';
 
 class ConversationService {
   final SupabaseClient _client = Supabase.instance.client;
+  String? get _userId => _client.auth.currentUser?.id;
 
   // Helper: Get the correct User ID (Auth or Device-Linked)
   Future<String?> _getEffectiveUserId() async {
@@ -56,16 +57,16 @@ class ConversationService {
       }
 
       final data = await _client
-          .from('conversations')
+          .from('wa_conversations')
           .select()
-          .eq('user_id', userId) // Filter by the resolved User ID
+          .eq('user_id', _userId!) // Filter by the resolved User ID
           .order('last_message_time', ascending: false);
           
       debugPrint('Fetched ${data.length} conversations');
       return (data as List)
           .map((item) {
             try {
-              return Conversation.fromMap(item);
+              return Conversation.fromMap(item) ;
             } catch (e, stack) {
               debugPrint('Error parsing conversation item: $e');
               // debugPrint('Stack: $stack');
@@ -88,7 +89,7 @@ class ConversationService {
       if (userId == null) return [];
 
       final data = await _client
-          .from('conversations')
+          .from('wa_conversations')
           .select()
           .eq('user_id', userId) // Filter by User ID
           .eq('is_archived', false)
@@ -132,7 +133,7 @@ class ConversationService {
   Future<void> markAsRead(String conversationId) async {
     try {
       await _client
-          .from('conversations')
+          .from('wa_conversations')
           .update({
             'is_unread': false, 
             'updated_at': _getUtcTimestamp()
@@ -154,7 +155,7 @@ class ConversationService {
       final localTimeForText = currentTime.toIso8601String();
       
       await _client
-          .from('conversations')
+          .from('wa_conversations')
           .update({
             'last_message': message,
             'last_message_time': localTimeForText,
@@ -174,7 +175,7 @@ class ConversationService {
   }) async {
     try {
       await _client
-        .from('conversations')
+        .from('wa_conversations')
         .update({
           'ai_agent_id': aiEnabled ? defaultAgentId : null,
           'updated_at': _getUtcTimestamp(),
@@ -188,7 +189,7 @@ class ConversationService {
   Future<bool> getAIAgentStatus(String conversationId) async {
     try {
       final response = await _client
-        .from('conversations')
+        .from('wa_conversations')
         .select('ai_agent_id')
         .eq('id', conversationId)
         .single();
@@ -202,7 +203,7 @@ class ConversationService {
   Future<Conversation?> getConversationById(String conversationId) async {
     try {
       final response = await _client
-        .from('conversations')
+        .from('wa_conversations')
         .select()
         .eq('id', conversationId)
         .single();
