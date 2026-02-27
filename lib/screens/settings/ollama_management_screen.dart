@@ -59,7 +59,7 @@ class _OllamaManagementScreenState extends State<OllamaManagementScreen> {
     bool isSuccess = false;
 
     // Listen to the stream
-    await for (String status in _ollama.pullModelStream(tag)) {
+    await for (String status in _ollama.pullModel(tag)) {
       setState(() => _pullProgress = status);
       if (status == "Success" || status.toLowerCase().contains("success")) {
         isSuccess = true;

@@ -139,7 +139,7 @@ class _InstallationScreenState extends State<InstallationScreen> {
     _addLog("----------------------------------------");
 
     try {
-      await for (final status in _ollamaService.pullModelStream(_selectedModel!)) {
+      await for (final status in _ollamaService.pullModel(_selectedModel!)) {
         // Only log updates, don't spam if string is same
         if (_logs.isEmpty || _logs.last != "> $status") {
            _addLog(status);

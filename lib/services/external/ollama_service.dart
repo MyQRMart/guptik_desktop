@@ -2,7 +2,7 @@ import 'dart:convert';
 import 'package:http/http.dart' as http;
 
 class OllamaService {
-  // Define the Base URL
+  // Define the Base URL (using the Docker port)
   final String _baseUrl = 'http://localhost:55434';
 
   // Check if Ollama is up and running
@@ -15,16 +15,16 @@ class OllamaService {
     }
   }
 
-  // Pull a model and stream progress updates
-  Stream<String> pullModelStream(String modelName) async* {
-    final request = http.Request('POST', Uri.parse('$_baseUrl/pull')); // baseUrl is already /api
+  // Pull a model and stream progress updates (FIXED CHUNK PARSING)
+  Stream<String> pullModel(String modelName) async* {
+    final request = http.Request('POST', Uri.parse('$_baseUrl/api/pull'));
     request.body = jsonEncode({'name': modelName});
 
     try {
       final streamedResponse = await request.send();
 
       await for (var chunk in streamedResponse.stream.transform(utf8.decoder)) {
-        // Ollama might send multiple JSON objects in one chunk separated by newlines
+        // Split chunks by newline to handle multiple JSONs in one stream packet
         final lines = chunk.split('\n').where((l) => l.trim().isNotEmpty);
         
         for (var line in lines) {
@@ -33,7 +33,7 @@ class OllamaService {
             if (data['status'] != null) {
               String msg = data['status'];
               if (data['total'] != null && data['completed'] != null) {
-                final percent = ((data['completed'] / data['total']) * 100).toStringAsFixed(0);
+                final percent = (data['completed'] / data['total'] * 100).toStringAsFixed(0);
                 yield "$msg ($percent%)";
               } else {
                 yield msg;
@@ -48,10 +48,22 @@ class OllamaService {
     }
   }
 
+  // Delete a model (REQUIRED FOR UI)
+  Future<bool> deleteModel(String modelName) async {
+    try {
+      final request = http.Request('DELETE', Uri.parse('$_baseUrl/api/delete'));
+      request.body = jsonEncode({'name': modelName});
+      final response = await request.send();
+      return response.statusCode == 200;
+    } catch (e) {
+      return false;
+    }
+  }
+
   // --- NEW METHODS FOR CHAT ---
 
-  // Get list of installed models
-  Future<List<String>> getInstalledModels() async {
+  // Get list of installed models (Renamed to match previous UI code, or use as is)
+  Future<List<String>> getLocalModels() async {
     try {
       final response = await http.get(Uri.parse('$_baseUrl/api/tags'));
       if (response.statusCode == 200) {
@@ -66,32 +78,7 @@ class OllamaService {
     return [];
   }
 
-  Future<bool> deleteModel(String modelName) async {
-    try {
-      final request = http.Request('DELETE', Uri.parse('$_baseUrl/delete'));
-      request.body = jsonEncode({'name': modelName});
-      final response = await request.send();
-      return response.statusCode == 200;
-    } catch (e) {
-      return false;
-    }
-  }
-
-  Future<List<String>> getLocalModels() async {
-    try {
-      final response = await http.get(Uri.parse('$_baseUrl/tags'));
-      if (response.statusCode == 200) {
-        final data = jsonDecode(response.body);
-        final List models = data['models'] ?? [];
-        return models.map((m) => m['name'].toString()).toList();
-      }
-      return [];
-    } catch (e) {
-      return [];
-    }
-  }
-
-  // Stream chat response
+  // Stream chat response (FIXED CHUNK PARSING)
   Stream<String> generateChatStream({
     required String model,
     required List<Map<String, String>> history,
@@ -110,16 +97,20 @@ class OllamaService {
       
       final streamedResponse = await request.send();
 
-      await for (var line in streamedResponse.stream.transform(utf8.decoder)) {
-        try {
-          final data = jsonDecode(line);
-          if (data['message'] != null && data['message']['content'] != null) {
-            yield data['message']['content'];
-          }
-          if (data['done'] == true) {
-            break;
-          }
-        } catch (_) {}
+      await for (var chunk in streamedResponse.stream.transform(utf8.decoder)) {
+        final lines = chunk.split('\n').where((l) => l.trim().isNotEmpty);
+        
+        for (var line in lines) {
+          try {
+            final data = jsonDecode(line);
+            if (data['message'] != null && data['message']['content'] != null) {
+              yield data['message']['content'];
+            }
+            if (data['done'] == true) {
+              break;
+            }
+          } catch (_) {}
+        }
       }
     } catch (e) {
       yield "\n[Error connecting to AI: $e]";

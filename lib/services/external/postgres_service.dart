@@ -8,6 +8,7 @@ class PostgresService {
   // The active connection
   late Connection _connection;
   bool _isConnected = false;
+  
 
   // 1. Initialize & Create User/Tables
   Future<void> initializeUserDatabase({
@@ -17,9 +18,9 @@ class PostgresService {
   }) async {
     Connection? rootConn;
     int retries = 0;
-    const int maxRetries = 300; // Will wait up to 30 seconds
+    const int maxRetries = 300; 
 
-    // A. Retry Loop for Docker Bootup
+    // A. Retry Loop for Docker Bootup (Fixes the "Connection not open" error)
     while (retries < maxRetries) {
       try {
         rootConn = await Connection.open(
@@ -32,37 +33,46 @@ class PostgresService {
           ),
           settings: const ConnectionSettings(sslMode: SslMode.disable),
         );
-        break; // Connected!
+        
+        // CRITICAL FIX: Prove the connection is actually stable (Postgres restarts during init)
+        await rootConn.execute("SELECT 1");
+        break; // Connected and stable!
       } catch (e) {
         retries++;
-        // Print the actual error so we can see what's failing in the terminal
-        print("Waiting for database... ($retries/$maxRetries) | Status: ${e.toString().split('\n')[0]}");
+        try { await rootConn?.close(); } catch (_) {} // Clean up dead connections
+        print("Waiting for database... ($retries/$maxRetries)");
         await Future.delayed(const Duration(seconds: 2));
       }
     }
 
-    if (rootConn == null) {
-      throw Exception("Database failed to start in time.");
-    }
+    if (rootConn == null) throw Exception("Database failed to start in time.");
 
     try {
       final safeUser = email.replaceAll(RegExp(r'[^a-zA-Z0-9]'), '_');
 
-
-      await _createTables(rootConn);
-      // Create Role if not exists
-      await rootConn.execute("DO \$\$ BEGIN IF NOT EXISTS (SELECT FROM pg_catalog.pg_roles WHERE rolname = '$safeUser') THEN CREATE ROLE $safeUser LOGIN PASSWORD '$userPassword'; END IF; END \$\$;");
+      // 1. Run the setup as SUPERUSER (fixes schema permissions automatically)
+      await setupDefaultDatabase(rootConn);
+      
+      // 2. Create User Role if missing
+      final checkRole = await rootConn.execute("SELECT 1 FROM pg_catalog.pg_roles WHERE rolname = '$safeUser'");
+      if (checkRole.isEmpty) {
+        final safePass = userPassword.replaceAll("'", "''");
+        await rootConn.execute("CREATE ROLE $safeUser LOGIN PASSWORD '$safePass'");
+      }
+      
+      // 3. Grant privileges
       await rootConn.execute("GRANT ALL PRIVILEGES ON DATABASE postgres TO $safeUser");
       await rootConn.execute('GRANT ALL PRIVILEGES ON ALL TABLES IN SCHEMA public TO $safeUser;');
       await rootConn.execute('GRANT ALL PRIVILEGES ON ALL SEQUENCES IN SCHEMA public TO $safeUser;');
        
-      // B. Close root and establish the persistent User Connection
+      // 4. Safely close superuser connection
       await rootConn.close();
       
+      // 5. Connect as normal user
       _connection = await Connection.open(
         Endpoint(
           host: 'localhost', 
-          port: 55432, // <--- FIXED PORT
+          port: 55432, 
           database: 'postgres', 
           username: safeUser, 
           password: userPassword
@@ -75,6 +85,27 @@ class PostgresService {
     } catch (e) {
       print("DB Init Error: $e");
       rethrow;
+    }
+  }
+
+  Future<List<Map<String, dynamic>>> getTableSchema(String tableName) async {
+    if (!_isConnected) return [];
+    try {
+      final result = await _connection.execute('''
+        SELECT column_name, data_type, column_default, is_nullable
+        FROM information_schema.columns 
+        WHERE table_schema = 'public' AND table_name = '$tableName'
+        ORDER BY ordinal_position;
+      ''');
+      return result.map((row) => {
+        'name': row[0].toString(),
+        'type': row[1].toString(),
+        'default': row[2]?.toString(),
+        'nullable': row[3].toString() == 'YES'
+      }).toList();
+    } catch (e) {
+      print("Schema Fetch Error: $e");
+      return [];
     }
   }
 
@@ -102,8 +133,13 @@ class PostgresService {
     }
   }
 
-  Future<void> _createTables(Connection conn) async {
-    // 1. Vault Files
+  Future<void> setupDefaultDatabase(Connection conn) async {
+    // 1. Grant Schema Permissions (fixes the 42501 error automatically)
+    try {
+      await conn.execute('GRANT ALL ON SCHEMA public TO public;');
+    } catch (_) {}
+
+    // 2. Vault Files
     await conn.execute('''
       CREATE TABLE IF NOT EXISTS vault_files (
         id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
@@ -116,7 +152,17 @@ class PostgresService {
       )
     ''');
 
-    // 2. TrustMe Messages
+    // 3. TrustMe Tables
+    await conn.execute('''
+      CREATE TABLE IF NOT EXISTS trust_me_setup (
+        id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+        user_name TEXT,
+        encryption_key TEXT,
+        is_active BOOLEAN DEFAULT TRUE,
+        created_at TIMESTAMPTZ DEFAULT NOW()
+      )
+    ''');
+
     await conn.execute('''
       CREATE TABLE IF NOT EXISTS trust_me_messages (
         id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
@@ -127,19 +173,19 @@ class PostgresService {
       )
     ''');
 
-    // 3. Ollama Models
+    // 4. Ollama Tables
     await conn.execute('''
       CREATE TABLE IF NOT EXISTS ollama_models (
         model_tag TEXT PRIMARY KEY,
+        system_prompt TEXT,
         size_bytes BIGINT,
         description TEXT,
         parameter_size TEXT,
-        pulled_at TIMESTAMPTZ DEFAULT NOW(),
-        is_active BOOLEAN DEFAULT FALSE
+        is_active BOOLEAN DEFAULT TRUE,
+        pulled_at TIMESTAMPTZ DEFAULT NOW()
       )
     ''');
 
-    // 4. Ollama Chat Memory
     await conn.execute('''
       CREATE TABLE IF NOT EXISTS ollama_chat_memory (
         id UUID PRIMARY KEY DEFAULT gen_random_uuid(),

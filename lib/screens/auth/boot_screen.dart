@@ -4,6 +4,8 @@ import '../../services/external/docker_service.dart';
 import '../../services/external/postgres_service.dart';
 import '../dashboard/dashboard_screen.dart';
 import 'login_screen.dart';
+import '../../services/supabase_service.dart';
+import 'dart:io';
 
 class BootScreen extends StatefulWidget {
   const BootScreen({super.key});
@@ -27,13 +29,19 @@ class _BootScreenState extends State<BootScreen> {
       final password = prefs.getString('user_password');
 
       if (vaultPath == null || email == null || password == null) {
-        throw Exception("Corrupt session data");
+        throw Exception("Missing core session data. Please log in.");
       }
 
-      // 1. Re-link Docker Service to the correct path
+      // 1. Simple User Verification (Only check if they have a valid Cloud Session)
+      final supabaseService = SupabaseService();
+      if (supabaseService.currentUserId == null) {
+        throw Exception("Cloud session expired. Please log in again.");
+      }
+
+      // 2. Re-link Docker Service
       DockerService().setVaultPath(vaultPath);
 
-      // 2. Re-connect to Postgres (Retries in case Docker is still booting)
+      // 3. Re-connect to Postgres (Retries in case Docker is still booting)
       int retries = 0;
       bool connected = false;
       while (retries < 15) {
@@ -49,17 +57,15 @@ class _BootScreenState extends State<BootScreen> {
 
       if (!connected) throw Exception("Could not reach local database.");
 
-      // 3. Go to Dashboard
+      // 4. Go to Dashboard
       if (mounted) {
         Navigator.pushReplacement(context, MaterialPageRoute(builder: (_) => const DashboardScreen()));
       }
 
     } catch (e) {
       print("Boot Error: $e");
-      // If something fails critically, fallback to Login
+      // Fallback to Login Screen, but DO NOT wipe SharedPreferences
       if (mounted) {
-        final prefs = await SharedPreferences.getInstance();
-        await prefs.clear(); // Clear bad data
         Navigator.pushReplacement(context, MaterialPageRoute(builder: (_) => const LoginScreen()));
       }
     }

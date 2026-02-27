@@ -16,15 +16,14 @@ class _DatatablesScreenState extends State<DatatablesScreen> {
   String? _selectedTable;
   List<String> _tables = [];
   List<Map<String, dynamic>> _data = [];
-  List<String> _columns = [];
+  List<Map<String, dynamic>> _schema = [];
+  String _searchQuery = "";
 
-  // Define default tables that cannot be deleted
-  final List<String> _defaultTables = [
-    'vault_files',
-    'trust_me_messages',
-    'ollama_models',
-    'ollama_chat_memory'
-  ];
+  final List<String> _defaultTables = ['vault_files', 'trust_me_messages', 'ollama_models', 'ollama_chat_memory'];
+
+  // Scroll controllers for explicit scrollbars
+  final ScrollController _horizontalScroll = ScrollController();
+  final ScrollController _verticalScroll = ScrollController();
 
   @override
   void initState() {
@@ -32,164 +31,374 @@ class _DatatablesScreenState extends State<DatatablesScreen> {
     _loadTables();
   }
 
+  @override
+  void dispose() {
+    _horizontalScroll.dispose();
+    _verticalScroll.dispose();
+    super.dispose();
+  }
+
   Future<void> _loadTables() async {
     final tables = await _postgres.getTableNames();
     setState(() => _tables = tables);
+    if (_tables.isNotEmpty && _selectedTable == null) _loadData(_tables.first);
   }
 
   Future<void> _loadData(String tableName) async {
     final data = await _postgres.getTableData(tableName);
-    final columns = await _postgres.getTableColumns(tableName);
+    final schema = await _postgres.getTableSchema(tableName);
     setState(() {
       _selectedTable = tableName;
       _data = data;
-      _columns = columns;
+      _schema = schema;
+      _searchQuery = ""; 
     });
   }
 
-  void _showCreateTableDialog() {
-    final nameCtrl = TextEditingController();
-    final colsCtrl = TextEditingController(text: 'id UUID PRIMARY KEY DEFAULT gen_random_uuid(), name TEXT');
+  // ============== ADVANCED TABLE CREATION ==============
+  void _showAdvancedCreateTableDialog() {
+    String tableName = '';
+    List<Map<String, dynamic>> cols = [
+      {'name': 'id', 'type': 'UUID', 'isPk': true, 'isUnique': true, 'isNullable': false, 'defVal': 'gen_random_uuid()'}
+    ];
+    final types = ['TEXT', 'INTEGER', 'BIGINT', 'BOOLEAN', 'UUID', 'JSONB', 'TIMESTAMPTZ'];
+
     showDialog(
       context: context,
-      builder: (context) => AlertDialog(
-        backgroundColor: const Color(0xFF1E293B),
-        title: const Text("Create New Table", style: TextStyle(color: Colors.white)),
-        content: Column(
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            TextField(controller: nameCtrl, decoration: const InputDecoration(labelText: 'Table Name', labelStyle: TextStyle(color: Colors.cyanAccent)), style: const TextStyle(color: Colors.white)),
-            TextField(controller: colsCtrl, decoration: const InputDecoration(labelText: 'Columns (SQL Format)', labelStyle: TextStyle(color: Colors.cyanAccent)), style: const TextStyle(color: Colors.white)),
-          ],
-        ),
-        actions: [
-          TextButton(onPressed: () => Navigator.pop(context), child: const Text("Cancel")),
-          TextButton(
-            onPressed: () async {
-              await _logic.createTable(nameCtrl.text, colsCtrl.text);
-              Navigator.pop(context);
-              _loadTables();
-            },
-            child: const Text("Create", style: TextStyle(color: Colors.cyanAccent)),
-          ),
-        ],
+      builder: (context) => StatefulBuilder(
+        builder: (context, setStateBuilder) {
+          return AlertDialog(
+            backgroundColor: const Color(0xFF1E293B),
+            title: const Text("Create Advanced Table", style: TextStyle(color: Colors.white)),
+            content: SizedBox(
+              width: 800,
+              height: 500,
+              child: Column(
+                children: [
+                  TextField(
+                    onChanged: (v) => tableName = v.trim(),
+                    style: const TextStyle(color: Colors.white),
+                    decoration: const InputDecoration(labelText: 'Table Name (No Spaces)', labelStyle: TextStyle(color: Colors.cyanAccent)),
+                  ),
+                  const SizedBox(height: 16),
+                  const Row(
+                    children: [
+                      Expanded(flex: 2, child: Text("Column Name", style: TextStyle(color: Colors.grey))),
+                      Expanded(flex: 2, child: Text("Type", style: TextStyle(color: Colors.grey))),
+                      Expanded(child: Text("PK", style: TextStyle(color: Colors.grey))),
+                      Expanded(child: Text("Unique", style: TextStyle(color: Colors.grey))),
+                      Expanded(child: Text("Null", style: TextStyle(color: Colors.grey))),
+                      Expanded(flex: 2, child: Text("Default", style: TextStyle(color: Colors.grey))),
+                      SizedBox(width: 40),
+                    ],
+                  ),
+                  const Divider(color: Colors.grey),
+                  Expanded(
+                    child: ListView.builder(
+                      itemCount: cols.length,
+                      itemBuilder: (ctx, i) {
+                        return Row(
+                          children: [
+                            Expanded(flex: 2, child: TextFormField(initialValue: cols[i]['name'], style: const TextStyle(color: Colors.white), onChanged: (v) => cols[i]['name'] = v)),
+                            Expanded(flex: 2, child: DropdownButton<String>(
+                              value: cols[i]['type'],
+                              dropdownColor: const Color(0xFF0F172A),
+                              style: const TextStyle(color: Colors.white),
+                              items: types.map((t) => DropdownMenuItem(value: t, child: Text(t))).toList(),
+                              onChanged: (v) => setStateBuilder(() => cols[i]['type'] = v!),
+                            )),
+                            Expanded(child: Checkbox(value: cols[i]['isPk'], activeColor: Colors.cyanAccent, onChanged: (v) => setStateBuilder(() => cols[i]['isPk'] = v))),
+                            Expanded(child: Checkbox(value: cols[i]['isUnique'], activeColor: Colors.cyanAccent, onChanged: (v) => setStateBuilder(() => cols[i]['isUnique'] = v))),
+                            Expanded(child: Checkbox(value: cols[i]['isNullable'], activeColor: Colors.cyanAccent, onChanged: (v) => setStateBuilder(() => cols[i]['isNullable'] = v))),
+                            Expanded(flex: 2, child: TextFormField(initialValue: cols[i]['defVal'], style: const TextStyle(color: Colors.white), onChanged: (v) => cols[i]['defVal'] = v)),
+                            IconButton(icon: const Icon(Icons.remove_circle, color: Colors.redAccent), onPressed: () => setStateBuilder(() => cols.removeAt(i))),
+                          ],
+                        );
+                      },
+                    ),
+                  ),
+                  TextButton.icon(
+                    icon: const Icon(Icons.add, color: Colors.cyanAccent),
+                    label: const Text("Add Column", style: TextStyle(color: Colors.cyanAccent)),
+                    onPressed: () => setStateBuilder(() => cols.add({'name': '', 'type': 'TEXT', 'isPk': false, 'isUnique': false, 'isNullable': true, 'defVal': ''})),
+                  )
+                ],
+              ),
+            ),
+            actions: [
+              TextButton(onPressed: () => Navigator.pop(context), child: const Text("Cancel")),
+              ElevatedButton(
+                style: ElevatedButton.styleFrom(backgroundColor: Colors.cyanAccent, foregroundColor: Colors.black),
+                onPressed: () async {
+
+                  if (tableName.isEmpty) {
+                    return;
+                  }
+                  try {
+                    await _logic.createAdvancedTable(tableName, cols);
+                    if (mounted) Navigator.pop(context);
+                    _loadTables();
+                  } catch (e) {
+                    ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text("Error: $e"), backgroundColor: Colors.redAccent));
+                  }
+                },
+                child: const Text("Create Table"),
+              ),
+            ],
+          );
+        }
       ),
     );
   }
 
+  // ============== SMART ROW EDITOR ==============
   void _showRowDialog({Map<String, dynamic>? existingRow}) {
-    if (_selectedTable == null || _columns.isEmpty) return;
+    if (_selectedTable == null || _schema.isEmpty) return;
     
-    final controllers = {for (var col in _columns) col: TextEditingController(text: existingRow?[col]?.toString() ?? '')};
-    
+    Map<String, dynamic> inputData = {};
+    for (var col in _schema) {
+      inputData[col['name']] = existingRow?[col['name']]?.toString() ?? '';
+    }
+
     showDialog(
       context: context,
-      builder: (context) => AlertDialog(
-        backgroundColor: const Color(0xFF1E293B),
-        title: Text(existingRow == null ? "Add Row" : "Edit Row", style: const TextStyle(color: Colors.white)),
-        content: SingleChildScrollView(
-          child: Column(
-            mainAxisSize: MainAxisSize.min,
-            children: _columns.map((col) => TextField(
-              controller: controllers[col],
-              decoration: InputDecoration(labelText: col, labelStyle: const TextStyle(color: Colors.cyanAccent)),
-              style: const TextStyle(color: Colors.white),
-            )).toList(),
-          ),
-        ),
-        actions: [
-          TextButton(onPressed: () => Navigator.pop(context), child: const Text("Cancel")),
-          TextButton(
-            onPressed: () async {
-              final data = controllers.map((key, value) => MapEntry(key, value.text));
-              if (existingRow == null) {
-                await _logic.insertRow(_selectedTable!, data);
-              } else {
-                await _logic.updateRow(_selectedTable!, _columns.first, existingRow[_columns.first].toString(), data);
-              }
-              Navigator.pop(context);
-              _loadData(_selectedTable!);
-            },
-            child: const Text("Save", style: TextStyle(color: Colors.cyanAccent)),
-          ),
-        ],
+      builder: (context) => StatefulBuilder(
+        builder: (context, setStateBuilder) {
+          return AlertDialog(
+            backgroundColor: const Color(0xFF1E293B),
+            title: Text(existingRow == null ? "Insert Row" : "Edit Row", style: const TextStyle(color: Colors.white)),
+            content: SizedBox(
+              width: 500,
+              child: SingleChildScrollView(
+                child: Column(
+                  mainAxisSize: MainAxisSize.min,
+                  children: _schema.map((col) {
+                    final isBool = col['type'].toString().toLowerCase().contains('bool');
+                    final hint = col['default'] != null ? "Default: ${col['default']}" : "Type: ${col['type']}";
+                    
+                    return Padding(
+                      padding: const EdgeInsets.only(bottom: 12.0),
+                      child: Row(
+                        crossAxisAlignment: CrossAxisAlignment.center,
+                        children: [
+                          SizedBox(width: 120, child: Text(col['name'], style: const TextStyle(color: Colors.cyanAccent, fontWeight: FontWeight.bold))),
+                          Expanded(
+                            child: isBool 
+                              ? DropdownButtonFormField<String>(
+                                  value: inputData[col['name']].toString().isEmpty ? null : inputData[col['name']].toString(),
+                                  dropdownColor: const Color(0xFF0F172A),
+                                  style: const TextStyle(color: Colors.white),
+                                  decoration: InputDecoration(hintText: "Select Boolean", hintStyle: const TextStyle(color: Colors.grey), border: OutlineInputBorder(borderRadius: BorderRadius.circular(8))),
+                                  items: const [
+                                    DropdownMenuItem(value: 'true', child: Text("TRUE")),
+                                    DropdownMenuItem(value: 'false', child: Text("FALSE")),
+                                  ],
+                                  onChanged: (v) => inputData[col['name']] = v,
+                                )
+                              : TextFormField(
+                                  initialValue: inputData[col['name']],
+                                  style: const TextStyle(color: Colors.white),
+                                  decoration: InputDecoration(
+                                    hintText: hint,
+                                    hintStyle: const TextStyle(color: Colors.grey, fontSize: 12),
+                                    filled: true,
+                                    fillColor: const Color(0xFF0F172A),
+                                    border: OutlineInputBorder(borderRadius: BorderRadius.circular(8), borderSide: BorderSide.none),
+                                  ),
+                                  onChanged: (v) => inputData[col['name']] = v,
+                                ),
+                          )
+                        ],
+                      ),
+                    );
+                  }).toList(),
+                ),
+              ),
+            ),
+            actions: [
+              TextButton(onPressed: () => Navigator.pop(context), child: const Text("Cancel")),
+              ElevatedButton(
+                style: ElevatedButton.styleFrom(backgroundColor: Colors.cyanAccent, foregroundColor: Colors.black),
+                onPressed: () async {
+                  try {
+                    if (existingRow == null) {
+                      await _logic.insertRow(_selectedTable!, inputData);
+                    } else {
+                      await _logic.updateRow(_selectedTable!, _schema.first['name'], existingRow[_schema.first['name']].toString(), inputData);
+                    }
+                    if (mounted) Navigator.pop(context);
+                    _loadData(_selectedTable!);
+                  } catch (e) {
+                    ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text("Error: $e"), backgroundColor: Colors.redAccent));
+                  }
+                },
+                child: const Text("Save Data"),
+              ),
+            ],
+          );
+        }
       ),
     );
   }
 
   @override
   Widget build(BuildContext context) {
-    return Column(
-      crossAxisAlignment: CrossAxisAlignment.start,
+    final filteredData = _searchQuery.isEmpty ? _data : _data.where((row) {
+      return row.values.any((val) => val.toString().toLowerCase().contains(_searchQuery.toLowerCase()));
+    }).toList();
+
+    return Row(
       children: [
-        Padding(
-          padding: const EdgeInsets.all(16.0),
-          child: Row(
+        // ============== LEFT SIDEBAR: TABLES ==============
+        Container(
+          width: 220,
+          decoration: BoxDecoration(border: Border(right: BorderSide(color: Colors.white.withOpacity(0.1)))),
+          child: Column(
             children: [
-              DropdownButton<String>(
-                value: _selectedTable,
-                hint: const Text("Select Local Table", style: TextStyle(color: Colors.white)),
-                dropdownColor: const Color(0xFF1E293B),
-                items: _tables.map((t) => DropdownMenuItem(value: t, child: Text(t, style: const TextStyle(color: Colors.white)))).toList(),
-                onChanged: (val) => val != null ? _loadData(val) : null,
-              ),
-              const SizedBox(width: 20),
-              ElevatedButton.icon(
-                icon: const Icon(Icons.add_box),
-                label: const Text("New Table"),
-                style: ElevatedButton.styleFrom(backgroundColor: const Color(0xFF1E293B), foregroundColor: Colors.cyanAccent),
-                onPressed: _showCreateTableDialog,
-              ),
-              if (_selectedTable != null) ...[
-                const SizedBox(width: 10),
-                ElevatedButton.icon(
-                  icon: const Icon(Icons.add),
-                  label: const Text("Add Row"),
-                  style: ElevatedButton.styleFrom(backgroundColor: const Color(0xFF1E293B), foregroundColor: Colors.cyanAccent),
-                  onPressed: () => _showRowDialog(),
+              Padding(
+                padding: const EdgeInsets.all(16.0),
+                child: ElevatedButton.icon(
+                  icon: const Icon(Icons.table_bar_outlined),
+                  label: const Text("New Table"),
+                  style: ElevatedButton.styleFrom(backgroundColor: Colors.cyanAccent, foregroundColor: Colors.black, minimumSize: const Size(double.infinity, 45)),
+                  onPressed: _showAdvancedCreateTableDialog,
                 ),
-                // Only show Delete Table button if it's NOT a default table
-                if (!_defaultTables.contains(_selectedTable)) ...[
-                  const SizedBox(width: 10),
-                  IconButton(
-                    icon: const Icon(Icons.delete, color: Colors.redAccent),
-                    tooltip: "Drop Table",
-                    onPressed: () async {
-                      await _logic.deleteTable(_selectedTable!);
-                      setState(() { _selectedTable = null; _data = []; _columns = []; });
-                      _loadTables();
-                    },
-                  ),
-                ],
-              ]
+              ),
+              const Divider(color: Colors.grey, height: 1),
+              Expanded(
+                child: ListView.builder(
+                  itemCount: _tables.length,
+                  itemBuilder: (ctx, i) {
+                    final t = _tables[i];
+                    final isSelected = t == _selectedTable;
+                    final isDefault = _defaultTables.contains(t);
+                    return ListTile(
+                      leading: Icon(isDefault ? Icons.lock_outline : Icons.table_chart, color: isSelected ? Colors.cyanAccent : Colors.grey, size: 18),
+                      title: Text(t, style: TextStyle(color: isSelected ? Colors.cyanAccent : Colors.white, fontSize: 13, fontWeight: isSelected ? FontWeight.bold : FontWeight.normal)),
+                      tileColor: isSelected ? Colors.white.withOpacity(0.05) : Colors.transparent,
+                      onTap: () => _loadData(t),
+                    );
+                  },
+                ),
+              ),
             ],
           ),
         ),
-        if (_columns.isNotEmpty)
-          Expanded(
-            child: SingleChildScrollView(
-              scrollDirection: Axis.horizontal,
-              child: SingleChildScrollView(
-                child: DataTable(
-                  columns: [
-                    ..._columns.map((col) => DataColumn(label: Text(col, style: const TextStyle(color: Colors.cyanAccent)))),
-                    const DataColumn(label: Text('Actions', style: TextStyle(color: Colors.cyanAccent))),
-                  ],
-                  rows: _data.map((row) => DataRow(
-                    cells: [
-                      ..._columns.map((col) => DataCell(Text(row[col]?.toString() ?? 'NULL', style: const TextStyle(color: Colors.white)))),
-                      DataCell(
-                        IconButton(
-                          icon: const Icon(Icons.edit, color: Colors.cyanAccent, size: 20),
-                          onPressed: () => _showRowDialog(existingRow: row),
+
+        // ============== RIGHT AREA: DATA & ACTIONS ==============
+        Expanded(
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              // TOP ACTION BAR
+              Container(
+                padding: const EdgeInsets.all(16.0),
+                decoration: BoxDecoration(border: Border(bottom: BorderSide(color: Colors.white.withOpacity(0.1)))),
+                child: Row(
+                  children: [
+                    Text(_selectedTable?.toUpperCase() ?? "NO TABLE SELECTED", style: const TextStyle(color: Colors.white, fontSize: 18, fontWeight: FontWeight.bold, letterSpacing: 1.5)),
+                    const SizedBox(width: 30),
+                    if (_selectedTable != null) ...[
+                      // SEARCH
+                      Expanded(
+                        child: TextField(
+                          style: const TextStyle(color: Colors.white),
+                          decoration: InputDecoration(
+                            prefixIcon: const Icon(Icons.search, color: Colors.grey),
+                            hintText: "Search row data...",
+                            hintStyle: const TextStyle(color: Colors.grey),
+                            filled: true,
+                            fillColor: const Color(0xFF1E293B),
+                            contentPadding: const EdgeInsets.symmetric(horizontal: 16),
+                            border: OutlineInputBorder(borderRadius: BorderRadius.circular(20), borderSide: BorderSide.none),
+                          ),
+                          onChanged: (val) => setState(() => _searchQuery = val),
                         ),
                       ),
-                    ],
-                  )).toList(),
+                      const SizedBox(width: 20),
+                      ElevatedButton.icon(
+                        icon: const Icon(Icons.add), label: const Text("Insert Row"),
+                        style: ElevatedButton.styleFrom(backgroundColor: const Color(0xFF1E293B), foregroundColor: Colors.cyanAccent),
+                        onPressed: () => _showRowDialog(),
+                      ),
+                      const SizedBox(width: 10),
+                      IconButton(icon: const Icon(Icons.refresh, color: Colors.white), onPressed: () => _loadData(_selectedTable!)),
+                      if (!_defaultTables.contains(_selectedTable)) ...[
+                        const SizedBox(width: 10),
+                        IconButton(
+                          icon: const Icon(Icons.delete_forever, color: Colors.redAccent),
+                          tooltip: "Drop Table",
+                          onPressed: () async {
+                            await _logic.deleteTable(_selectedTable!);
+                            setState(() { _selectedTable = null; _data = []; _schema = []; });
+                            _loadTables();
+                          },
+                        ),
+                      ],
+                    ]
+                  ],
                 ),
               ),
-            ),
+
+              // TABLE BODY WITH ALWAYS-VISIBLE SCROLLBARS (TOP HORIZONTAL & RIGHT VERTICAL)
+              if (_schema.isNotEmpty)
+                Expanded(
+                  child: Scrollbar(
+                    controller: _horizontalScroll,
+                    thumbVisibility: true,
+                    scrollbarOrientation: ScrollbarOrientation.top, // TOP HORIZONTAL SCROLLBAR
+                    child: SingleChildScrollView(
+                      controller: _horizontalScroll,
+                      scrollDirection: Axis.horizontal,
+                      child: Scrollbar(
+                        controller: _verticalScroll,
+                        thumbVisibility: true, // RIGHT VERTICAL SCROLLBAR
+                        child: SingleChildScrollView(
+                          controller: _verticalScroll,
+                          scrollDirection: Axis.vertical,
+                          child: DataTable(
+                            headingRowColor: WidgetStateProperty.all(const Color(0xFF1E293B)),
+                            columns: [
+                              ..._schema.map((col) => DataColumn(
+                                label: Row(
+                                  children: [
+                                    Text(col['name'], style: const TextStyle(color: Colors.cyanAccent, fontWeight: FontWeight.bold)),
+                                    const SizedBox(width: 5),
+                                    Text('(${col['type']})', style: const TextStyle(color: Colors.grey, fontSize: 10)),
+                                  ],
+                                )
+                              )),
+                              const DataColumn(label: Text('Actions', style: TextStyle(color: Colors.cyanAccent))),
+                            ],
+                            rows: filteredData.map((row) => DataRow(
+                              cells: [
+                                ..._schema.map((col) => DataCell(Text(row[col['name']]?.toString() ?? 'NULL', style: TextStyle(color: row[col['name']] == null ? Colors.grey : Colors.white)))),
+                                DataCell(
+                                  Row(
+                                    mainAxisSize: MainAxisSize.min,
+                                    children: [
+                                      IconButton(icon: const Icon(Icons.edit, color: Colors.cyanAccent, size: 18), onPressed: () => _showRowDialog(existingRow: row)),
+                                      IconButton(
+                                        icon: const Icon(Icons.delete, color: Colors.redAccent, size: 18), 
+                                        onPressed: () async {
+                                          await _logic.deleteRow(_selectedTable!, _schema.first['name'], row[_schema.first['name']].toString());
+                                          _loadData(_selectedTable!);
+                                        }
+                                      ),
+                                    ],
+                                  )
+                                ),
+                              ],
+                            )).toList(),
+                          ),
+                        ),
+                      ),
+                    ),
+                  ),
+                ),
+            ],
           ),
+        ),
       ],
     );
   }

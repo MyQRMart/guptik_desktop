@@ -13,6 +13,7 @@ import 'package:shared_preferences/shared_preferences.dart';
 import 'package:uuid/uuid.dart';
 import 'dart:convert';
 import 'package:http/http.dart' as http;
+import 'dart:io';
 
 class SupabaseService {
   static final SupabaseService _instance = SupabaseService._internal();
@@ -166,17 +167,6 @@ class SupabaseService {
     } catch (e) {
       throw Exception('Error deleting vault file: $e');
     }
-  }
-
-  Future<String> getOrCreateDeviceId() async {
-    final prefs = await SharedPreferences.getInstance();
-    String? deviceId = prefs.getString('desktop_device_id');
-    
-    if (deviceId == null) {
-      deviceId = const Uuid().v4();
-      await prefs.setString('desktop_device_id', deviceId);
-    }
-    return deviceId;
   }
 
   Future<void> updateVaultFileFavorite(String id, bool isFavorite) async {
@@ -474,6 +464,31 @@ class SupabaseService {
         .eq('user_id', userId);
   }
 
+
+  Future<bool> verifyDeviceRegistration(String userId, String deviceModel) async {
+    try {
+      final response = await _supabase
+          .from('desktop_devices')
+          .select('id')
+          .eq('user_id', userId)
+          .eq('device_model', deviceModel)
+          .limit(1);
+          
+      return (response as List).isNotEmpty;
+    } catch (e) {
+      print('Error verifying device: $e');
+      return false;
+    }
+  }
+
+  // ============== GET STABLE DEVICE ID ==============
+  Future<String> getOrCreateDeviceId() async {
+    // Stop using SharedPreferences/UUIDs. 
+    // Return the stable computer hostname so it survives preference clears.
+    return Platform.localHostname;
+  }
+
+    
 
 
 

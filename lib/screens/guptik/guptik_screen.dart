@@ -31,7 +31,7 @@ class _GuptikScreenState extends State<GuptikScreen> {
   }
 
   Future<void> _loadModels() async {
-    final models = await OllamaService().getInstalledModels();
+    final models = await OllamaService().getLocalModels();
     if (mounted) {
       setState(() {
         _availableModels = models;
