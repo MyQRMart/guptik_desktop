@@ -1,6 +1,5 @@
 import 'package:flutter/material.dart';
 import 'package:file_picker/file_picker.dart';
-import 'dart:io';
 import 'installation_screen.dart';
 
 class StorageSelectionScreen extends StatefulWidget {

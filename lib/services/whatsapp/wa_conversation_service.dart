@@ -67,7 +67,7 @@ class ConversationService {
           .map((item) {
             try {
               return Conversation.fromMap(item) ;
-            } catch (e, stack) {
+            } catch (e) {
               debugPrint('Error parsing conversation item: $e');
               // debugPrint('Stack: $stack');
               rethrow;

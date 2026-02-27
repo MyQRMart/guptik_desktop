@@ -147,7 +147,7 @@ class _LoginScreenState extends State<LoginScreen> {
               // Header
               Row(
                 children: [
-                  Image.asset('lib/assets/logonobg.png', height: 40, errorBuilder: (_,__,___) => const Icon(Icons.security, color: Colors.cyanAccent, size: 40)),
+                  Image.asset('lib/assets/logonobg.png', height: 40, errorBuilder: (_,_,_) => const Icon(Icons.security, color: Colors.cyanAccent, size: 40)),
                   const SizedBox(width: 15),
                   const Text("GUPTIK CORE", style: TextStyle(fontSize: 22, fontWeight: FontWeight.bold, letterSpacing: 1.5, color: Colors.white)),
                 ],

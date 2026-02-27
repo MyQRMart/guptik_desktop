@@ -1,5 +1,5 @@
 import 'package:flutter/material.dart';
-import 'package:flutter_markdown/flutter_markdown.dart'; // Add to pubspec if missing, or use Text
+// Add to pubspec if missing, or use Text
 import 'package:uuid/uuid.dart';
 import '../../services/external/postgres_service.dart';
 import '../../services/external/ollama_service.dart';

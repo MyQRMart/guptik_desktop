@@ -7,6 +7,8 @@ import '../whatsapp/whatsapp_screen.dart';
 import '../home_control/home_control_screen.dart';
 import '../guptik/guptik_screen.dart'; // <--- ADD THIS IMPORT
 import '../../widgets/window_header.dart';
+import '../datatables/datatables_screen.dart';
+import '../facebook/meta_dashboard.dart';
 
 class DashboardScreen extends StatefulWidget {
   const DashboardScreen({super.key});
@@ -22,30 +24,36 @@ class _DashboardScreenState extends State<DashboardScreen> {
   final List<Widget> _screens = const [
     HomeControlScreen(),
     WhatsAppScreen(),
+    MetaDashboard(),
     VaultScreen(),
     TrustMeScreen(),
     GuptikScreen(),
     Center(child: Text("Security UI", style: TextStyle(color: Colors.white))), 
+    DatatablesScreen(),
     SettingsScreen(),
   ];
 
   final List<String> _screenLabels = [
     'Home Control',
     'WhatsApp',
+    'Meta',
     'Vault',
     'Trust Me',
     'Guptik AI',
     'Security',
+    'Database',
     'Settings',
   ];
 
   final List<IconData> _screenIcons = [
     LucideIcons.home,
     LucideIcons.messageCircle,
+    LucideIcons.facebook,
     LucideIcons.database,
     LucideIcons.shieldCheck,
     LucideIcons.bot,
     LucideIcons.lock,
+    LucideIcons.table,
   ];
 
   @override
@@ -87,9 +95,9 @@ class _DashboardScreenState extends State<DashboardScreen> {
                   (index) => _buildNavItem(index, _screenLabels[index], _screenIcons[index]),
                 ),
                 const Spacer(),
-                // Settings at bottom (Routes to Index 6)
+                // Settings at bottom (Routes to Index 9)
                 _buildNavItem(
-                  6,
+                  8,
                   "Settings",
                   LucideIcons.settings,
                 ),

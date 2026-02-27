@@ -58,8 +58,11 @@ class _VaultScreenState extends State<VaultScreen> {
 
     // Fallback (Only if DB fetch also failed)
     if (storedPath == null) {
-       if (Platform.isWindows) storedPath = 'C:\\GuptikVault';
-       else storedPath = '${Platform.environment['HOME']}/GuptikVault';
+       if (Platform.isWindows) {
+         storedPath = 'C:\\GuptikVault';
+       } else {
+         storedPath = '${Platform.environment['HOME']}/GuptikVault';
+       }
     }
 
     // CRITICAL FIX: Append 'vault_files' to the path
@@ -171,8 +174,9 @@ class _VaultScreenState extends State<VaultScreen> {
   Future<void> _openFile(String? path) async {
     if (path == null) return;
     try {
-      if (Platform.isLinux) await Process.run('xdg-open', [path]);
-      else if (Platform.isMacOS) await Process.run('open', [path]);
+      if (Platform.isLinux) {
+        await Process.run('xdg-open', [path]);
+      } else if (Platform.isMacOS) await Process.run('open', [path]);
       else if (Platform.isWindows) await Process.run('explorer', [path]);
     } catch (e) {
       print("Could not open file: $e");

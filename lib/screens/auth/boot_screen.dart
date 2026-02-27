@@ -73,7 +73,7 @@ class _BootScreenState extends State<BootScreen> {
         child: Column(
           mainAxisAlignment: MainAxisAlignment.center,
           children: [
-            Image.asset('lib/assets/logonobg.png', height: 80, errorBuilder: (_,__,___) => const Icon(Icons.security, size: 80, color: Colors.cyanAccent)),
+            Image.asset('lib/assets/logonobg.png', height: 80, errorBuilder: (_,_,_) => const Icon(Icons.security, size: 80, color: Colors.cyanAccent)),
             const SizedBox(height: 30),
             const CircularProgressIndicator(color: Colors.cyanAccent),
             const SizedBox(height: 20),

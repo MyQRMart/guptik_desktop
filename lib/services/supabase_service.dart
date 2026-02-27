@@ -6,6 +6,9 @@ import '../models/home.dart';
 import '../models/room.dart';
 import '../models/board.dart';
 import '../models/switch.dart';
+import '../models/social_conversation.dart';
+import '../models/social_message.dart';
+import '../models/auto_comment_post.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'package:uuid/uuid.dart';
 import 'dart:convert';
@@ -191,7 +194,7 @@ class SupabaseService {
   Future<List<Conversation>> getConversations() async {
     try {
       // FIX: Use effective user ID instead of direct auth
-      final userId = await currentUserId;
+      final userId = currentUserId;
       if (userId == null) throw Exception('Device not linked to any user');
 
       final response = await _supabase
@@ -425,4 +428,72 @@ class SupabaseService {
       throw Exception('Error creating switch: $e');
     }
   }
+
+  Future<List<SocialConversation>> getSocialConversations(String platformPrefix) async {
+    final userId = currentUserId;
+    if (userId == null) throw Exception('User not authenticated');
+
+    final response = await _supabase
+        .from('${platformPrefix}_conversations')
+        .select()
+        .eq('user_id', userId)
+        .order('last_message_time', ascending: false);
+
+    return (response as List).map((json) => SocialConversation.fromJson(json)).toList();
+  }
+
+  Future<List<SocialMessage>> getSocialMessages(String platformPrefix, String conversationId) async {
+    final response = await _supabase
+        .from('${platformPrefix}_messages')
+        .select()
+        .eq('conversation_id', conversationId)
+        .order('timestamp', ascending: true);
+
+    return (response as List).map((json) => SocialMessage.fromJson(json)).toList();
+  }
+
+  Future<List<AutoCommentPost>> getAutoComments(String platformPrefix) async {
+    final userId = currentUserId;
+    if (userId == null) return [];
+
+    final response = await _supabase
+        .from('${platformPrefix}_auto_comment_posts')
+        .select()
+        .eq('user_id', userId);
+
+    return (response as List).map((json) => AutoCommentPost.fromJson(json)).toList();
+  }
+
+  Future<void> updateUserApiSettings(Map<String, dynamic> updates) async {
+    final userId = currentUserId;
+    if (userId == null) return;
+
+    await _supabase
+        .from('user_api_settings')
+        .update(updates)
+        .eq('user_id', userId);
+  }
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 }
+
+
+
+
+

@@ -222,4 +222,57 @@ class PostgresService {
     sessions.sort((a, b) => b['date'].compareTo(a['date']));
     return sessions;
   }
+
+  Future<List<String>> getTableNames() async {
+    if (!_isConnected) return [];
+    try {
+      final result = await _connection.execute('''
+        SELECT table_name 
+        FROM information_schema.tables 
+        WHERE table_schema = 'public' 
+        AND table_type = 'BASE TABLE';
+      ''');
+      return result.map((row) => row[0].toString()).toList();
+    } catch (e) {
+      print("Error fetching tables: $e");
+      return [];
+    }
+  }
+
+  Future<List<Map<String, dynamic>>> getTableData(String tableName) async {
+    if (!_isConnected) return [];
+    try {
+      final result = await _connection.execute('SELECT * FROM "$tableName"');
+      return result.map((row) => row.toColumnMap()).toList();
+    } catch (e) {
+      print("Error fetching table data: $e");
+      return [];
+    }
+  }
+
+  Future<List<String>> getTableColumns(String tableName) async {
+    if (!_isConnected) return [];
+    try {
+      final result = await _connection.execute('''
+        SELECT column_name FROM information_schema.columns 
+        WHERE table_schema = 'public' AND table_name = '$tableName';
+      ''');
+      return result.map((row) => row[0].toString()).toList();
+    } catch (e) {
+      print("Error fetching columns: $e");
+      return [];
+    }
+  }
+
+  Future<void> executeRawQuery(String query) async {
+    if (!_isConnected) return;
+    try {
+      await _connection.execute(query);
+    } catch (e) {
+      print("Error executing query: $e");
+      rethrow;
+    }
+  }
+
+
 }
