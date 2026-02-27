@@ -16,26 +16,31 @@ class OllamaService {
   }
 
   // Pull a model and stream progress updates
-  Stream<String> pullModel(String modelName) async* {
-    final request = http.Request('POST', Uri.parse('$_baseUrl/api/pull'));
+  Stream<String> pullModelStream(String modelName) async* {
+    final request = http.Request('POST', Uri.parse('$_baseUrl/pull')); // baseUrl is already /api
     request.body = jsonEncode({'name': modelName});
 
     try {
       final streamedResponse = await request.send();
 
-      await for (var line in streamedResponse.stream.transform(utf8.decoder)) {
-        try {
-          final data = jsonDecode(line);
-          if (data['status'] != null) {
-            String msg = data['status'];
-            if (data['total'] != null && data['completed'] != null) {
-              final percent = (data['completed'] / data['total'] * 100).toStringAsFixed(0);
-              yield "$msg ($percent%)";
-            } else {
-              yield msg;
+      await for (var chunk in streamedResponse.stream.transform(utf8.decoder)) {
+        // Ollama might send multiple JSON objects in one chunk separated by newlines
+        final lines = chunk.split('\n').where((l) => l.trim().isNotEmpty);
+        
+        for (var line in lines) {
+          try {
+            final data = jsonDecode(line);
+            if (data['status'] != null) {
+              String msg = data['status'];
+              if (data['total'] != null && data['completed'] != null) {
+                final percent = ((data['completed'] / data['total']) * 100).toStringAsFixed(0);
+                yield "$msg ($percent%)";
+              } else {
+                yield msg;
+              }
             }
-          }
-        } catch (_) {}
+          } catch (_) {}
+        }
       }
       yield "Success";
     } catch (e) {
@@ -59,6 +64,31 @@ class OllamaService {
       print("Error fetching models: $e");
     }
     return [];
+  }
+
+  Future<bool> deleteModel(String modelName) async {
+    try {
+      final request = http.Request('DELETE', Uri.parse('$_baseUrl/delete'));
+      request.body = jsonEncode({'name': modelName});
+      final response = await request.send();
+      return response.statusCode == 200;
+    } catch (e) {
+      return false;
+    }
+  }
+
+  Future<List<String>> getLocalModels() async {
+    try {
+      final response = await http.get(Uri.parse('$_baseUrl/tags'));
+      if (response.statusCode == 200) {
+        final data = jsonDecode(response.body);
+        final List models = data['models'] ?? [];
+        return models.map((m) => m['name'].toString()).toList();
+      }
+      return [];
+    } catch (e) {
+      return [];
+    }
   }
 
   // Stream chat response

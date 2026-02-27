@@ -264,6 +264,65 @@ class PostgresService {
     }
   }
 
+  Future<void> initOllamaTableUpdates() async {
+    if (!_isConnected) return;
+    try {
+      // Ensure system_prompt column exists
+      await _connection.execute('ALTER TABLE ollama_models ADD COLUMN IF NOT EXISTS system_prompt TEXT');
+    } catch (_) {}
+  }
+
+  Future<void> saveOllamaModel(String modelTag) async {
+    if (!_isConnected) return;
+    await initOllamaTableUpdates();
+    await _connection.execute('''
+      INSERT INTO ollama_models (model_tag, is_active)
+      VALUES ('$modelTag', TRUE)
+      ON CONFLICT (model_tag) DO NOTHING;
+    ''');
+  }
+
+  Future<void> updateModelPrompt(String modelTag, String prompt) async {
+    if (!_isConnected) return;
+    final safePrompt = prompt.replaceAll("'", "''");
+    await _connection.execute('''
+      UPDATE ollama_models SET system_prompt = '$safePrompt' WHERE model_tag = '$modelTag'
+    ''');
+  }
+
+  Future<void> deleteOllamaModelDb(String modelTag) async {
+    if (!_isConnected) return;
+    await _connection.execute("DELETE FROM ollama_models WHERE model_tag = '$modelTag'");
+  }
+
+  Future<List<Map<String, dynamic>>> getSavedModels() async {
+    if (!_isConnected) return [];
+    await initOllamaTableUpdates();
+    final result = await _connection.execute('SELECT model_tag, system_prompt FROM ollama_models');
+    
+    return result.map((r) => {
+      'model_tag': r[0].toString(),
+      'system_prompt': r[1]?.toString() ?? '',
+    }).toList();
+  }
+
+  Future<void> saveVaultFileLocal({
+    required String fileName,
+    required String filePath,
+    required int fileSize,
+    required String mimeType,
+  }) async {
+    if (!_isConnected) return;
+    
+    final safeName = fileName.replaceAll("'", "''");
+    final safePath = filePath.replaceAll("'", "''");
+    
+    await _connection.execute('''
+      INSERT INTO vault_files (file_name, file_path, file_size, mime_type)
+      VALUES ('$safeName', '$safePath', $fileSize, '$mimeType')
+    ''');
+  }
+
   Future<void> executeRawQuery(String query) async {
     if (!_isConnected) return;
     try {
