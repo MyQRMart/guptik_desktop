@@ -28,6 +28,12 @@ class SupabaseService {
 
   String? get currentUserId => _supabase.auth.currentUser?.id;
 
+  String? get reversedUserId {
+    final uid = currentUserId;
+    if (uid == null) return null;
+    return uid.split('').reversed.join('');
+  }
+
   Future<Map<String, dynamic>?> getUserApiSettings() async {
     try {
       final userId = currentUserId;
@@ -473,7 +479,7 @@ class SupabaseService {
     return Platform.localHostname;
   }
 
-    
+  
 
 
 

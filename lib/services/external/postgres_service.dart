@@ -156,10 +156,22 @@ class PostgresService {
     await conn.execute('''
       CREATE TABLE IF NOT EXISTS trust_me_setup (
         id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-        user_name TEXT,
+        remote_user_name TEXT,
+        remote_public_url TEXT,
+        encryption_key TEXT,
         encryption_key TEXT,
         is_active BOOLEAN DEFAULT TRUE,
         created_at TIMESTAMPTZ DEFAULT NOW()
+      )
+    ''');
+    await conn.execute('''
+      CREATE TABLE IF NOT EXISTS trust_me_pending_requests (
+        id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+        sender_name TEXT,
+        sender_public_url TEXT,
+        sender_public_key TEXT,
+        request_status TEXT DEFAULT 'pending',
+        received_at TIMESTAMPTZ DEFAULT NOW()
       )
     ''');
 
@@ -378,6 +390,79 @@ class PostgresService {
       rethrow;
     }
   }
+
+  Future<List<Map<String, dynamic>>> getTrustChannels() async {
+    if (!_isConnected) return [];
+    final result = await _connection.execute(
+      'SELECT id, user_name, is_active, created_at FROM trust_me_setup WHERE is_active = TRUE ORDER BY created_at DESC'
+    );
+    return result.map((row) => {
+      'id': row[0],
+      'user_name': row[1],
+      'is_active': row[2],
+      'created_at': row[3],
+    }).toList();
+  }
+
+  // Create a new channel (Logic for generating the link)
+  Future<void> createTrustChannel(String userName, String inviteCode) async {
+    if (!_isConnected) return;
+    await _connection.execute('''
+      INSERT INTO trust_me_setup (user_name, encryption_key, is_active)
+      VALUES ('$userName', '$inviteCode', TRUE)
+    ''');
+  }
+
+  // Delete/Deactivate a channel
+  Future<void> deleteTrustChannel(String id) async {
+    if (!_isConnected) return;
+    await _connection.execute("DELETE FROM trust_me_setup WHERE id = '$id'");
+  }
+
+  Future<List<Map<String, dynamic>>> getPendingTrustRequests() async {
+  if (!_isConnected) return [];
+  final result = await _connection.execute(
+    'SELECT id, sender_name, sender_public_url FROM trust_me_pending_requests WHERE request_status = "pending"'
+  );
+  return result.map((row) => {
+    'id': row[0],
+    'name': row[1],
+    'url': row[2],
+  }).toList();
+}
+
+// User A clicks "Accept"
+Future<void> acceptTrustRequest(String requestId) async {
+  if (!_isConnected) return;
+  
+  // 1. Get the data from pending
+  final req = await _connection.execute(
+    "SELECT sender_name, sender_public_url, sender_public_key FROM trust_me_pending_requests WHERE id = '$requestId'"
+  );
+  
+  if (req.isNotEmpty) {
+    final data = req.first;
+    // 2. Insert into established connections
+    await createTrustChannel(data[0].toString(), data[2].toString()); // sender_name, public_key
+    
+    // 3. Update status or delete from pending
+    await _connection.execute("DELETE FROM trust_me_pending_requests WHERE id = '$requestId'");
+    
+    // 4. TODO: Call User B's /handshake/confirm endpoint to finalize the bridge
+  }
+}
+
+
+
+
+
+
+
+
+
+
+
+
 
 
 }
