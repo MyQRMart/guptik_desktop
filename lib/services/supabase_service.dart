@@ -465,21 +465,6 @@ class SupabaseService {
   }
 
 
-  Future<bool> verifyDeviceRegistration(String userId, String deviceModel) async {
-    try {
-      final response = await _supabase
-          .from('desktop_devices')
-          .select('id')
-          .eq('user_id', userId)
-          .eq('device_model', deviceModel)
-          .limit(1);
-          
-      return (response as List).isNotEmpty;
-    } catch (e) {
-      print('Error verifying device: $e');
-      return false;
-    }
-  }
 
   // ============== GET STABLE DEVICE ID ==============
   Future<String> getOrCreateDeviceId() async {

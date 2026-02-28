@@ -176,17 +176,42 @@ void main() async {
     }
   });
 
-  // 4. AI PROXY
-  router.post('/guptik/chat', (Request req) async {
+  // ---------------------------------------------------------
+  // 4. NEW OLLAMA PROXY - GET MODELS (/api/tags)
+  // ---------------------------------------------------------
+  router.get('/api/tags', (Request req) async {
     try {
-      final payload = await req.readAsString();
-      final response = await http.post(
-        Uri.parse('http://ollama:11434/api/generate'),
-        headers: {'Content-Type': 'application/json'},
-        body: payload
-      );
+      // Forward the exact request to the Ollama container
+      final response = await http.get(Uri.parse('http://ollama:11434/api/tags'));
       return Response.ok(response.body, headers: {'Content-Type': 'application/json'});
     } catch (e) {
+      print("Error fetching models from Ollama: $e");
+      return Response.internalServerError(body: 'AI Offline');
+    }
+  });
+
+  // ---------------------------------------------------------
+  // 5. NEW OLLAMA PROXY - STREAMING CHAT (/api/chat)
+  // ---------------------------------------------------------
+  router.post('/api/chat', (Request req) async {
+    try {
+      final payload = await req.readAsString();
+      
+      // We use a streamed client so we can pass the typing effect back to the phone
+      final client = http.Client();
+      final proxyReq = http.Request('POST', Uri.parse('http://ollama:11434/api/chat'));
+      proxyReq.headers['Content-Type'] = 'application/json';
+      proxyReq.body = payload;
+
+      final response = await client.send(proxyReq);
+
+      // Pipe the stream directly back to the mobile app!
+      return Response.ok(
+        response.stream, 
+        headers: {'Content-Type': 'application/json'}
+      );
+    } catch (e) {
+      print("Error streaming from Ollama: $e");
       return Response.internalServerError(body: 'AI Offline');
     }
   });

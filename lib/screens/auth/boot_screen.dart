@@ -29,16 +29,16 @@ class _BootScreenState extends State<BootScreen> {
       final password = prefs.getString('user_password');
 
       if (vaultPath == null || email == null || password == null) {
-        throw Exception("Missing core session data. Please log in.");
+        throw Exception("Corrupt session data");
       }
 
-      // 1. Simple User Verification (Only check if they have a valid Cloud Session)
+      // 1. Check basic Supabase Auth Session
       final supabaseService = SupabaseService();
       if (supabaseService.currentUserId == null) {
         throw Exception("Cloud session expired. Please log in again.");
       }
 
-      // 2. Re-link Docker Service
+      // 2. Re-link Docker Service to the correct path
       DockerService().setVaultPath(vaultPath);
 
       // 3. Re-connect to Postgres (Retries in case Docker is still booting)
@@ -64,7 +64,7 @@ class _BootScreenState extends State<BootScreen> {
 
     } catch (e) {
       print("Boot Error: $e");
-      // Fallback to Login Screen, but DO NOT wipe SharedPreferences
+      // Fallback to Login
       if (mounted) {
         Navigator.pushReplacement(context, MaterialPageRoute(builder: (_) => const LoginScreen()));
       }
