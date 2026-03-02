@@ -9,8 +9,6 @@ import '../models/switch.dart';
 import '../models/social_conversation.dart';
 import '../models/social_message.dart';
 import '../models/auto_comment_post.dart';
-import 'package:shared_preferences/shared_preferences.dart';
-import 'package:uuid/uuid.dart';
 import 'dart:convert';
 import 'package:http/http.dart' as http;
 import 'dart:io';

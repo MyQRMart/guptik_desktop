@@ -10,6 +10,8 @@ class DockerService {
     required String dbPass,
     required String tunnelToken,
     required String publicUrl,
+    required String email,
+    required String userPassword,
   }) async {
     if (_vaultPath == null) throw Exception("Vault path is not initialized");
 
@@ -17,6 +19,8 @@ class DockerService {
     final requiredDirs = [
       '$_vaultPath/data/postgres',
       '$_vaultPath/data/ollama',
+      '$_vaultPath/data/n8n',
+      '$_vaultPath/data/osint',
       '$_vaultPath/vault_files', 
       '$_vaultPath/gateway'
     ];
@@ -36,6 +40,8 @@ POSTGRES_PORT=55432
 CF_TUNNEL_TOKEN=$tunnelToken
 PUBLIC_URL=$publicUrl
 VAULT_PATH=$_vaultPath
+N8N_USER=$email
+N8N_PASS=Gupt1k_pa55
 ''');
 
     // 3. Generate Gateway Code
@@ -85,6 +91,28 @@ services:
       - "55434:11434"
     volumes:
       - ./data/ollama:/root/.ollama
+
+  n8n:
+    image: docker.n8n.io/n8nio/n8n
+    restart: always
+    ports:
+      - "56887:5678"
+    environment:
+      - N8N_BASIC_AUTH_ACTIVE=true
+      - N8N_BASIC_AUTH_USER=\${N8N_USER}
+      - N8N_BASIC_AUTH_PASSWORD=\${N8N_PASS}
+      - N8N_OWNER_FIRST_NAME=Guptik
+      - N8N_OWNER_LAST_NAME=Admin
+    volumes:
+      - ./data/n8n:/home/node/.n8n
+
+  osint_python:
+    image: python:3.11-slim
+    restart: always
+    working_dir: /app
+    volumes:
+      - ./data/osint:/app
+    command: tail -f /dev/null
 ''');
   }
 

@@ -9,6 +9,9 @@ import '../guptik/guptik_screen.dart'; // <--- ADD THIS IMPORT
 import '../../widgets/window_header.dart';
 import '../datatables/datatables_screen.dart';
 import '../facebook/meta_dashboard.dart';
+import '../security/security_screen.dart';
+import '../security/security_screen.dart';
+import '../guptik/automation_screen.dart';
 
 class DashboardScreen extends StatefulWidget {
   const DashboardScreen({super.key});
@@ -28,7 +31,8 @@ class _DashboardScreenState extends State<DashboardScreen> {
     VaultScreen(),
     TrustMeScreen(),
     GuptikScreen(),
-    Center(child: Text("Security UI", style: TextStyle(color: Colors.white))), 
+    AutomationScreen(),
+    SecurityScreen(), 
     DatatablesScreen(),
     SettingsScreen(),
   ];
@@ -40,6 +44,7 @@ class _DashboardScreenState extends State<DashboardScreen> {
     'Vault',
     'Trust Me',
     'Guptik AI',
+    'Automation',
     'Security',
     'Database',
     'Settings',
@@ -52,6 +57,7 @@ class _DashboardScreenState extends State<DashboardScreen> {
     LucideIcons.database,
     LucideIcons.shieldCheck,
     LucideIcons.bot,
+    LucideIcons.workflow,
     LucideIcons.lock,
     LucideIcons.table,
   ];
@@ -97,7 +103,7 @@ class _DashboardScreenState extends State<DashboardScreen> {
                 const Spacer(),
                 // Settings at bottom (Routes to Index 9)
                 _buildNavItem(
-                  8,
+                  9,
                   "Settings",
                   LucideIcons.settings,
                 ),

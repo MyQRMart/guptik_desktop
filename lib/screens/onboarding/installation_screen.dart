@@ -88,9 +88,11 @@ class _InstallationScreenState extends State<InstallationScreen> {
       // --- STEP 1: DOCKER ---
       _addLog("Configuring Docker containers...");
       await _dockerService.autoConfigure(
-        dbPass: "guptik_secure_db",
+        dbPass: widget.userPassword,
         tunnelToken: widget.cfToken,
         publicUrl: widget.publicUrl,
+        email: widget.userEmail,
+        userPassword: widget.userPassword,
       );
 
       _addLog("Starting Docker Stack (This may take a moment)...");
@@ -102,7 +104,7 @@ class _InstallationScreenState extends State<InstallationScreen> {
       // --- STEP 2: DATABASE ---
       _addLog("Initializing Local Postgres User...");
       await PostgresService().initializeUserDatabase(
-        adminPassword: "guptik_secure_db",
+        adminPassword: widget.userPassword,
         email: widget.userEmail,
         userPassword: widget.userPassword,
       );

@@ -18,7 +18,7 @@ class PostgresService {
   }) async {
     Connection? rootConn;
     int retries = 0;
-    const int maxRetries = 300; 
+    const int maxRetries = 100; 
 
     // A. Retry Loop for Docker Bootup (Fixes the "Connection not open" error)
     while (retries < maxRetries) {
@@ -31,7 +31,11 @@ class PostgresService {
             username: 'postgres', 
             password: adminPassword
           ),
-          settings: const ConnectionSettings(sslMode: SslMode.disable),
+          settings: const ConnectionSettings(
+            sslMode: SslMode.disable,
+            connectTimeout: Duration(seconds: 3),
+            queryTimeout: Duration(seconds: 5),
+          ),
         );
         
         // CRITICAL FIX: Prove the connection is actually stable (Postgres restarts during init)
@@ -40,7 +44,8 @@ class PostgresService {
       } catch (e) {
         retries++;
         try { await rootConn?.close(); } catch (_) {} // Clean up dead connections
-        print("Waiting for database... ($retries/$maxRetries)");
+        print("$e");
+        print("($retries/$maxRetries)");
         await Future.delayed(const Duration(seconds: 2));
       }
     }
@@ -71,7 +76,7 @@ class PostgresService {
       // 5. Connect as normal user
       _connection = await Connection.open(
         Endpoint(
-          host: 'localhost', 
+          host: '127.0.0.1', 
           port: 55432, 
           database: 'postgres', 
           username: safeUser, 
@@ -117,7 +122,7 @@ class PostgresService {
       final safeUser = email.replaceAll(RegExp(r'[^a-zA-Z0-9]'), '_');
       _connection = await Connection.open(
         Endpoint(
-          host: 'localhost', 
+          host: '127.0.0.1', 
           port: 55432, 
           database: 'postgres', 
           username: safeUser, 
@@ -151,14 +156,12 @@ class PostgresService {
         added_at TIMESTAMPTZ DEFAULT NOW()
       )
     ''');
-
     // 3. TrustMe Tables
     await conn.execute('''
       CREATE TABLE IF NOT EXISTS trust_me_setup (
         id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
         remote_user_name TEXT,
         remote_public_url TEXT,
-        encryption_key TEXT,
         encryption_key TEXT,
         is_active BOOLEAN DEFAULT TRUE,
         created_at TIMESTAMPTZ DEFAULT NOW()
@@ -174,7 +177,6 @@ class PostgresService {
         received_at TIMESTAMPTZ DEFAULT NOW()
       )
     ''');
-
     await conn.execute('''
       CREATE TABLE IF NOT EXISTS trust_me_messages (
         id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
@@ -207,6 +209,26 @@ class PostgresService {
         content TEXT NOT NULL,
         created_at TIMESTAMPTZ DEFAULT NOW()
       )
+    ''');
+    await conn.execute('''
+      CREATE TABLE IF NOT EXISTS security_calls (
+        id SERIAL PRIMARY KEY,
+        caller_name TEXT,
+        caller_number TEXT NOT NULL,
+        call_type TEXT,
+        duration_seconds INT,
+        timestamp TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+      );
+    ''');
+
+    // SMS/Messages Logs Table
+    await conn.execute('''
+      CREATE TABLE IF NOT EXISTS security_messages (
+        id SERIAL PRIMARY KEY,
+        sender_number TEXT NOT NULL,
+        message_body TEXT,
+        timestamp TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+      );
     ''');
   }
 

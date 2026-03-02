@@ -1,8 +1,11 @@
 import 'package:flutter/material.dart';
-// Add to pubspec if missing, or use Text
+import 'n8n_webview_screen.dart';
 import 'package:uuid/uuid.dart';
 import '../../services/external/postgres_service.dart';
 import '../../services/external/ollama_service.dart';
+
+
+
 
 class GuptikScreen extends StatefulWidget {
   const GuptikScreen({super.key});
@@ -149,6 +152,32 @@ class _GuptikScreenState extends State<GuptikScreen> {
           color: const Color(0xFF1E293B),
           child: Column(
             children: [
+              Padding(
+                padding: const EdgeInsets.only(bottom: 16.0),
+                child: SizedBox(
+                  width: double.infinity,
+                  height: 48,
+                  child: ElevatedButton.icon(
+                    onPressed: () {
+                      Navigator.push(
+                        context,
+                        MaterialPageRoute(builder: (context) => const N8nWebviewScreen()),
+                      );
+                    },
+                    icon: const Icon(Icons.work, color: Color(0xFF205CE9)),
+                    label: const Text(
+                      "Automations",
+                      style: TextStyle(color: Color(0xFF0F172A), fontWeight: FontWeight.bold),
+                    ),
+                    style: ElevatedButton.styleFrom(
+                      backgroundColor: Colors.cyanAccent,
+                      shape: RoundedRectangleBorder(
+                        borderRadius: BorderRadius.circular(8),
+                      ),
+                    ),
+                  ),
+                ),
+              ),
               Padding(
                 padding: const EdgeInsets.all(16.0),
                 child: ElevatedButton.icon(
