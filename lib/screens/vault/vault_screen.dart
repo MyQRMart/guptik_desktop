@@ -70,8 +70,9 @@ class _VaultScreenState extends State<VaultScreen> {
             storedUrl = storedUrl!
                 .replaceAll('https://', '')
                 .replaceAll('http://', '');
-            if (storedUrl.endsWith('/'))
+            if (storedUrl.endsWith('/')) {
               storedUrl = storedUrl.substring(0, storedUrl.length - 1);
+            }
             debugPrint("🛠️ DEBUG - Successfully healed URL to: $storedUrl");
           }
         } else {
@@ -201,7 +202,7 @@ class _VaultScreenState extends State<VaultScreen> {
                             : "Only allowed emails with token",
                         style: TextStyle(color: Colors.grey[400], fontSize: 12),
                       ),
-                      activeColor: Colors.cyanAccent,
+                      activeThumbColor: Colors.cyanAccent,
                       value: isPublic,
                       onChanged: (val) {
                         setStateBuilder(() {

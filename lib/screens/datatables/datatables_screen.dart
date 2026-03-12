@@ -48,8 +48,9 @@ class _DatatablesScreenState extends State<DatatablesScreen> {
     final tables = await _postgres.getTableNames();
     if (mounted) {
       setState(() => _tables = tables);
-      if (_tables.isNotEmpty && _selectedTable == null)
+      if (_tables.isNotEmpty && _selectedTable == null) {
         _loadData(_tables.first);
+      }
     }
   }
 
@@ -349,7 +350,7 @@ class _DatatablesScreenState extends State<DatatablesScreen> {
                           Expanded(
                             child: isBool
                                 ? DropdownButtonFormField<String>(
-                                    value:
+                                    initialValue:
                                         inputData[col['name']]
                                             .toString()
                                             .isEmpty
@@ -425,7 +426,7 @@ class _DatatablesScreenState extends State<DatatablesScreen> {
                       await _logic.updateRow(
                         _selectedTable!,
                         _schema.first['name'],
-                        existingRow![_schema.first['name']].toString(),
+                        existingRow[_schema.first['name']].toString(),
                         inputData,
                       );
                     }

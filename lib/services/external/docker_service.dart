@@ -532,8 +532,9 @@ void main() async {
 
   Future<void> stopStack() async {
     try {
-      if (_vaultPath == null)
+      if (_vaultPath == null) {
         throw Exception("Vault path not set"); // <--- Added underscore
+      }
 
       // Run docker-compose down
       final result = await Process.run(
@@ -564,8 +565,9 @@ void main() async {
     String dockerCmd = 'docker';
     if (Platform.isLinux || Platform.isMacOS) {
       final which = await shell.run('which docker');
-      if (which.first.exitCode == 0)
+      if (which.first.exitCode == 0) {
         dockerCmd = which.first.stdout.toString().trim();
+      }
     }
 
     await shell.run('$dockerCmd compose pull');

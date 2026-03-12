@@ -5,7 +5,6 @@ import '../../services/external/postgres_service.dart';
 import '../dashboard/dashboard_screen.dart';
 import 'login_screen.dart';
 import '../../services/supabase_service.dart';
-import 'dart:io';
 
 class BootScreen extends StatefulWidget {
   const BootScreen({super.key});
@@ -46,7 +45,10 @@ class _BootScreenState extends State<BootScreen> {
       bool connected = false;
       while (retries < 15) {
         try {
-          await PostgresService().connectExistingUser(email: email, userPassword: password);
+          await PostgresService().connectExistingUser(
+            email: email,
+            userPassword: password,
+          );
           connected = true;
           break;
         } catch (e) {
@@ -59,14 +61,19 @@ class _BootScreenState extends State<BootScreen> {
 
       // 4. Go to Dashboard
       if (mounted) {
-        Navigator.pushReplacement(context, MaterialPageRoute(builder: (_) => const DashboardScreen()));
+        Navigator.pushReplacement(
+          context,
+          MaterialPageRoute(builder: (_) => const DashboardScreen()),
+        );
       }
-
     } catch (e) {
       print("Boot Error: $e");
       // Fallback to Login
       if (mounted) {
-        Navigator.pushReplacement(context, MaterialPageRoute(builder: (_) => const LoginScreen()));
+        Navigator.pushReplacement(
+          context,
+          MaterialPageRoute(builder: (_) => const LoginScreen()),
+        );
       }
     }
   }
@@ -79,11 +86,26 @@ class _BootScreenState extends State<BootScreen> {
         child: Column(
           mainAxisAlignment: MainAxisAlignment.center,
           children: [
-            Image.asset('lib/assets/logonobg.png', height: 80, errorBuilder: (_,_,_) => const Icon(Icons.security, size: 80, color: Colors.cyanAccent)),
+            Image.asset(
+              'lib/assets/logonobg.png',
+              height: 80,
+              errorBuilder: (_, _, _) => const Icon(
+                Icons.security,
+                size: 80,
+                color: Colors.cyanAccent,
+              ),
+            ),
             const SizedBox(height: 30),
             const CircularProgressIndicator(color: Colors.cyanAccent),
             const SizedBox(height: 20),
-            const Text("Waking up Guptik Core...", style: TextStyle(color: Colors.cyanAccent, fontFamily: 'Courier', letterSpacing: 2)),
+            const Text(
+              "Waking up Guptik Core...",
+              style: TextStyle(
+                color: Colors.cyanAccent,
+                fontFamily: 'Courier',
+                letterSpacing: 2,
+              ),
+            ),
           ],
         ),
       ),
