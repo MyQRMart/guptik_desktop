@@ -433,6 +433,98 @@ void main() async {
     }
   });
 
+  // ---------------------------------------------------------
+  // 8. MOBILE DATABASE SYNC - GET CHAT SESSIONS
+  // ---------------------------------------------------------
+  router.get('/api/sessions', (Request req) async {
+    try {
+      final connection = await Connection.open(
+        Endpoint(host: 'db', port: 5432, database: 'postgres', username: 'postgres', password: 'GuptikSystemPassword2026'),
+        settings: const ConnectionSettings(sslMode: SslMode.disable),
+      );
+      
+      final result = await connection.execute("""
+        SELECT DISTINCT ON (session_id) session_id, content, created_at
+        FROM ollama_chat_memory
+        WHERE role = 'user'
+        ORDER BY session_id, created_at ASC
+      """);
+      await connection.close();
+
+      final sessions = result.map((row) {
+        String snippet = row[1] as String;
+        if (snippet.length > 30) snippet = "${snippet.substring(0, 30)}...";
+        return {'id': row[0].toString(), 'title': snippet, 'date': row[2].toString()};
+      }).toList();
+      
+      sessions.sort((a, b) => (b['date'] as String).compareTo(a['date'] as String));
+      return Response.ok(jsonEncode(sessions), headers: {'Content-Type': 'application/json'});
+    } catch (e) {
+      print("DB Sync Error (Sessions): $e");
+      return Response.internalServerError(body: 'DB Error: $e');
+    }
+  });
+
+  // ---------------------------------------------------------
+  // 9. MOBILE DATABASE SYNC - GET CHAT HISTORY
+  // ---------------------------------------------------------
+  router.get('/api/history/<sessionId>', (Request req, String sessionId) async {
+    try {
+      final connection = await Connection.open(
+        Endpoint(host: 'db', port: 5432, database: 'postgres', username: 'postgres', password: 'GuptikSystemPassword2026'),
+        settings: const ConnectionSettings(sslMode: SslMode.disable),
+      );
+      
+      final result = await connection.execute(
+        Sql.named('SELECT role, content, created_at FROM ollama_chat_memory WHERE session_id = @sid ORDER BY created_at ASC'),
+        parameters: {'sid': sessionId},
+      );
+      await connection.close();
+
+      final history = result.map((row) => {
+        'role': row[0].toString(),
+        'content': row[1].toString(),
+        'created_at': row[2].toString(),
+      }).toList();
+
+      return Response.ok(jsonEncode(history), headers: {'Content-Type': 'application/json'});
+    } catch (e) {
+      print("DB Sync Error (History): $e");
+      return Response.internalServerError(body: 'DB Error: $e');
+    }
+  });
+
+  // ---------------------------------------------------------
+  // 10. MOBILE DATABASE SYNC - SAVE CHAT MESSAGE
+  // ---------------------------------------------------------
+  router.post('/api/chat/save', (Request req) async {
+    try {
+      final payload = await req.readAsString();
+      final data = jsonDecode(payload);
+      
+      final connection = await Connection.open(
+        Endpoint(host: 'db', port: 5432, database: 'postgres', username: 'postgres', password: 'GuptikSystemPassword2026'),
+        settings: const ConnectionSettings(sslMode: SslMode.disable),
+      );
+
+      await connection.execute(
+        Sql.named('INSERT INTO ollama_chat_memory (session_id, role, content, model_used) VALUES (@sid, @role, @content, @model)'),
+        parameters: {
+          'sid': data['sessionId'],
+          'role': data['role'],
+          'content': data['content'],
+          'model': data['model'] ?? 'unknown',
+        },
+      );
+      
+      await connection.close();
+      return Response.ok(jsonEncode({'status': 'saved'}), headers: {'Content-Type': 'application/json'});
+    } catch (e) {
+      print("DB Sync Error (Save): $e");
+      return Response.internalServerError(body: 'DB Error: $e');
+    }
+  });
+
   router.get('/', (Request req) => Response.ok('GUPTIK GATEWAY ONLINE'));
 
   // 6. RECEIVE SHARE RULES FROM MOBILE
@@ -455,7 +547,7 @@ void main() async {
       await connection.execute(
         Sql.named("""
           INSERT INTO vault_share_file (file_name, is_public, access_token, emails_access_to, created_at, expires_at) 
-          VALUES (@fn, @fp, @pub, @tok, @em, @ca, @ea)
+          VALUES (@fn, @pub, @tok, @em, @ca, @ea)
         """),
         parameters: {
           'fn': data['file_name'],
