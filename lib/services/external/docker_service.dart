@@ -455,7 +455,7 @@ void main() async {
       await connection.execute(
         Sql.named("""
           INSERT INTO vault_share_file (file_name, is_public, access_token, emails_access_to, created_at, expires_at) 
-          VALUES (@fn, @fp, @pub, @tok, @em, @ca, @ea)
+          VALUES (@fn, @pub, @tok, @em, @ca, @ea)
         """),
         parameters: {
           'fn': data['file_name'],
