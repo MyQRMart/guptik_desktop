@@ -1,11 +1,17 @@
 import 'package:postgres/postgres.dart';
 import 'dart:math';
+import 'dart:convert'; // 🚀 CRITICAL: Required for JSON encoding the Trust Me encryption keys!
 
+/// PostgresService — The Master Database Architect
+/// This service connects to the local Docker PostgreSQL container.
+/// It is responsible for creating the databases for Vault, Ollama,
+/// and the highly secure Trust Me P2P encrypted messaging system.
 class PostgresService {
   // Singleton Pattern
   static final PostgresService _instance = PostgresService._internal();
   factory PostgresService() => _instance;
   PostgresService._internal();
+
   String _generateSecureToken() {
     const chars =
         'AaBbCcDdEeFfGgHhIiJjKkLlMmNnOoPpQqRrSsTtUuVvWwXxYyZz1234567890';
@@ -19,29 +25,29 @@ class PostgresService {
   Connection? _connection;
   bool _isConnected = false;
 
-  // Master System Password (Match your docker-compose.yml)
+  // Master System Password (Must match your docker-compose.yml)
   static const String dockerMasterPassword = "GuptikSystemPassword2026";
 
   // ==============================================================================
-  // 1. CONNECTION MANAGEMENT
+  // SECTION 1: CONNECTION MANAGEMENT
   // ==============================================================================
+  // These methods handle the raw TCP connections between the Flutter Desktop App
+  // and the local Docker PostgreSQL container running on port 55432.
 
-  /// Connects to the DB (Used by Nexus Server)
   Future<void> connect() async {
     if (_connection != null && _connection!.isOpen) return;
 
     print("🔌 Connecting to Database...");
     try {
-      // Update these with your actual DB credentials if they differ
       _connection = await Connection.open(
         Endpoint(
           host: 'localhost',
           port: 55432,
-          database: 'postgres', // Ensure this matches your setup
+          database: 'postgres',
           username: 'postgres',
           password: dockerMasterPassword,
         ),
-        settings: ConnectionSettings(sslMode: SslMode.disable),
+        settings: const ConnectionSettings(sslMode: SslMode.disable),
       );
       _isConnected = true;
       print("✅ Database Connected!");
@@ -50,14 +56,12 @@ class PostgresService {
     }
   }
 
-  /// Closes the connection
   Future<void> close() async {
     await _connection?.close();
     _isConnected = false;
     print("🔌 Database Disconnected");
   }
 
-  /// Connects an existing user (Used by Desktop App Login)
   Future<void> connectExistingUser({
     required String email,
     required String userPassword,
@@ -83,10 +87,11 @@ class PostgresService {
   }
 
   // ==============================================================================
-  // 2. INITIALIZATION & TABLE SETUP
+  // SECTION 2: INITIALIZATION & TABLE SETUP
   // ==============================================================================
+  // When the user first registers, this boots up the database, creates their
+  // secure Postgres User Role, and runs the massive schema generation below.
 
-  /// Initialize & Create User/Tables (Used by Desktop App Sign Up)
   Future<void> initializeUserDatabase({
     required String email,
     required String userPassword,
@@ -95,7 +100,7 @@ class PostgresService {
     int retries = 0;
     const int maxRetries = 100;
 
-    // Retry Loop for Docker Bootup
+    // Retry Loop: Docker containers take a few seconds to boot up
     while (retries < maxRetries) {
       try {
         rootConn = await Connection.open(
@@ -113,13 +118,12 @@ class PostgresService {
           ),
         );
         await rootConn.execute("SELECT 1");
-        break; // Connected and stable
+        break;
       } catch (e) {
         retries++;
         try {
           await rootConn?.close();
         } catch (_) {}
-        print("$e");
         print("Waiting for DB... ($retries/$maxRetries)");
         await Future.delayed(const Duration(seconds: 2));
       }
@@ -130,10 +134,10 @@ class PostgresService {
     try {
       final safeUser = email.replaceAll(RegExp(r'[^a-zA-Z0-9]'), '_');
 
-      // 1. Run the setup as SUPERUSER
+      // 1. Run the massive schema setup as SUPERUSER
       await setupDefaultDatabase(rootConn);
 
-      // 2. Create User Role if missing
+      // 2. Create the specific User Role for security
       final checkRole = await rootConn.execute(
         "SELECT 1 FROM pg_catalog.pg_roles WHERE rolname = '$safeUser'",
       );
@@ -144,7 +148,7 @@ class PostgresService {
         );
       }
 
-      // 3. Grant privileges
+      // 3. Grant privileges to the new user
       await rootConn.execute(
         "GRANT ALL PRIVILEGES ON DATABASE postgres TO $safeUser",
       );
@@ -155,10 +159,9 @@ class PostgresService {
         'GRANT ALL PRIVILEGES ON ALL SEQUENCES IN SCHEMA public TO $safeUser;',
       );
 
-      // 4. Close superuser connection
       await rootConn.close();
 
-      // 5. Connect as normal user
+      // 4. Re-connect as the newly created normal user
       _connection = await Connection.open(
         Endpoint(
           host: '127.0.0.1',
@@ -177,45 +180,15 @@ class PostgresService {
     }
   }
 
-  Future<String?> createShareSettings({
-    required String fileName,
-    required bool isPublic,
-    List<String> emails = const [],
-    DateTime? expiresAt,
-  }) async {
-    if (_connection == null || !_connection!.isOpen) await connect();
-
-    // If it's public, no token is needed. Otherwise, generate a secure one.
-    final token = isPublic ? null : _generateSecureToken();
-
-    await _connection!.execute(
-      Sql.named('''
-        INSERT INTO vault_share_file 
-        (file_name, emails_access_to, access_token, is_public, expires_at) 
-        VALUES (@fn, @emails::TEXT[], @token, @pub, @exp)
-      '''),
-      parameters: {
-        'fn': fileName,
-        'emails': emails.isEmpty
-            ? null
-            : emails, // Postgres package handles Lists automatically
-        'token': token,
-        'pub': isPublic,
-        'exp': expiresAt?.toUtc(),
-      },
-    );
-
-    return token;
-  }
-
-  /// Creates all necessary tables
+  /// THE MASTER ARCHITECT: Creates all necessary tables for the entire system
   Future<void> setupDefaultDatabase(Connection conn) async {
-    // 1. Grant Schema Permissions
     try {
-      await conn.execute('GRANT ALL ON SCHEMA public TO public;');
+      await conn.execute('GRANT ALL ON SCHEMA public TO public');
     } catch (_) {}
 
-    // 2. Vault Files
+    // -------------------------------------------------------------------------
+    // PART A: VAULT SYSTEM SCHEMA
+    // -------------------------------------------------------------------------
     await conn.execute('''
       CREATE TABLE IF NOT EXISTS vault_files (
         id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
@@ -227,6 +200,7 @@ class PostgresService {
         added_at TIMESTAMPTZ DEFAULT NOW()
       )
     ''');
+
     await conn.execute('''
       CREATE TABLE IF NOT EXISTS vault_share_file (
         id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
@@ -239,37 +213,9 @@ class PostgresService {
       )
     ''');
 
-    // 3. TrustMe Tables
-    await conn.execute('''
-      CREATE TABLE IF NOT EXISTS trust_me_setup (
-        id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-        user_name TEXT,
-        encryption_key TEXT,
-        is_active BOOLEAN DEFAULT TRUE,
-        created_at TIMESTAMPTZ DEFAULT NOW()
-      )
-    ''');
-    await conn.execute('''
-      CREATE TABLE IF NOT EXISTS trust_me_pending_requests (
-        id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-        sender_name TEXT,
-        sender_public_url TEXT,
-        sender_public_key TEXT,
-        request_status TEXT DEFAULT 'pending',
-        received_at TIMESTAMPTZ DEFAULT NOW()
-      )
-    ''');
-    await conn.execute('''
-      CREATE TABLE IF NOT EXISTS trust_me_messages (
-        id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-        sender_id TEXT,
-        content_encrypted TEXT,
-        is_read BOOLEAN DEFAULT FALSE,
-        received_at TIMESTAMPTZ DEFAULT NOW()
-      )
-    ''');
-
-    // 4. Ollama Tables
+    // -------------------------------------------------------------------------
+    // PART B: OLLAMA AI & SECURITY SCHEMA
+    // -------------------------------------------------------------------------
     await conn.execute('''
       CREATE TABLE IF NOT EXISTS ollama_models (
         model_tag TEXT PRIMARY KEY,
@@ -293,7 +239,6 @@ class PostgresService {
       )
     ''');
 
-    // 5. Security Tables
     await conn.execute('''
       CREATE TABLE IF NOT EXISTS security_calls (
         id SERIAL PRIMARY KEY,
@@ -302,7 +247,7 @@ class PostgresService {
         call_type TEXT,
         duration_seconds INT,
         timestamp TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-      );
+      )
     ''');
 
     await conn.execute('''
@@ -311,13 +256,394 @@ class PostgresService {
         sender_number TEXT NOT NULL,
         message_body TEXT,
         timestamp TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-      );
+      )
+    ''');
+
+    // -------------------------------------------------------------------------
+    // PART C: TRUST ME (V1 ENTERPRISE SCHEMA) 🚀
+    // -------------------------------------------------------------------------
+
+    // Enable cryptographic extensions
+    await conn.execute('CREATE EXTENSION IF NOT EXISTS "uuid-ossp"');
+    await conn.execute('CREATE EXTENSION IF NOT EXISTS "pgcrypto"');
+
+    // 1. IDENTITY
+    await conn.execute('''
+      CREATE TABLE IF NOT EXISTS tm_identity (
+        id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+        guptik_user_id TEXT NOT NULL,
+        username TEXT NOT NULL,
+        identity_public_key TEXT NOT NULL,
+        identity_private_key_enc TEXT NOT NULL,
+        signed_prekey_public TEXT NOT NULL,
+        signed_prekey_private_enc TEXT NOT NULL,
+        signed_prekey_id INTEGER NOT NULL DEFAULT 1,
+        signed_prekey_signature TEXT NOT NULL,
+        signed_prekey_created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+        one_time_prekeys JSONB NOT NULL DEFAULT '[]'::jsonb,
+        one_time_prekeys_count INTEGER NOT NULL DEFAULT 0,
+        device_fingerprint TEXT NOT NULL,
+        device_type TEXT NOT NULL DEFAULT 'desktop',
+        created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+        updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+      )
+    ''');
+
+    // 2. CONTACTS & INDICES
+    await conn.execute('''
+      CREATE TABLE IF NOT EXISTS tm_contacts (
+        id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+        contact_guptik_id TEXT NOT NULL UNIQUE,
+        contact_username TEXT NOT NULL,
+        contact_cloudflare_url TEXT NOT NULL,
+        contact_identity_pubkey TEXT NOT NULL,
+        contact_signed_prekey TEXT NOT NULL,
+        contact_signed_prekey_id INTEGER NOT NULL,
+        ratchet_state_enc TEXT,
+        status TEXT NOT NULL DEFAULT 'active',
+        conversation_id UUID UNIQUE,
+        handshake_id UUID,
+        established_at TIMESTAMPTZ,
+        last_message_at TIMESTAMPTZ,
+        last_seen_at TIMESTAMPTZ,
+        created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+        updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+      )
+    ''');
+    await conn.execute(
+      'CREATE INDEX IF NOT EXISTS idx_tm_contacts_username ON tm_contacts(contact_username)',
+    );
+    await conn.execute(
+      'CREATE INDEX IF NOT EXISTS idx_tm_contacts_status ON tm_contacts(status)',
+    );
+
+    // 3. HANDSHAKE SESSIONS
+    await conn.execute('''
+      CREATE TABLE IF NOT EXISTS tm_handshake_sessions (
+        id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+        initiated_by TEXT NOT NULL,
+        counterpart_username TEXT,
+        counterpart_guptik_id TEXT,
+        counterpart_cloudflare_url TEXT,
+        code_6digit TEXT NOT NULL,
+        code_hash TEXT NOT NULL,
+        created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+        live_window_start TIMESTAMPTZ,
+        live_window_expires_at TIMESTAMPTZ,
+        status TEXT NOT NULL DEFAULT 'code_generated',
+        my_ephemeral_pubkey TEXT,
+        their_key_bundle_snapshot JSONB,
+        resulting_contact_id UUID,
+        notes TEXT,
+        updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+      )
+    ''');
+    await conn.execute(
+      'CREATE INDEX IF NOT EXISTS idx_tm_handshake_status ON tm_handshake_sessions(status)',
+    );
+
+    // 4. PENDING REQUESTS
+    await conn.execute('''
+      CREATE TABLE IF NOT EXISTS tm_pending_requests (
+        id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+        handshake_session_id UUID,
+        direction TEXT NOT NULL,
+        counterpart_username TEXT NOT NULL,
+        counterpart_guptik_id TEXT,
+        counterpart_cloudflare_url TEXT,
+        counterpart_public_key TEXT,
+        status TEXT NOT NULL DEFAULT 'pending',
+        created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+        resolved_at TIMESTAMPTZ,
+        updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+      )
+    ''');
+    await conn.execute(
+      'CREATE INDEX IF NOT EXISTS idx_tm_pending_direction ON tm_pending_requests(direction, status)',
+    );
+
+    // 5. CONVERSATIONS
+    await conn.execute('''
+      CREATE TABLE IF NOT EXISTS tm_conversations (
+        id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+        type TEXT NOT NULL,
+        contact_id UUID,
+        group_id UUID,
+        unknown_sender_id TEXT,
+        last_message_preview TEXT,
+        last_message_at TIMESTAMPTZ,
+        last_message_type TEXT,
+        unread_count INTEGER NOT NULL DEFAULT 0,
+        is_muted BOOLEAN NOT NULL DEFAULT FALSE,
+        is_pinned BOOLEAN NOT NULL DEFAULT FALSE,
+        is_archived BOOLEAN NOT NULL DEFAULT FALSE,
+        source_type TEXT,
+        created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+        updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+      )
+    ''');
+    await conn.execute(
+      'CREATE INDEX IF NOT EXISTS idx_tm_conversations_type ON tm_conversations(type)',
+    );
+    await conn.execute(
+      'CREATE INDEX IF NOT EXISTS idx_tm_conversations_last_msg ON tm_conversations(last_message_at DESC)',
+    );
+
+    // 6. MESSAGES
+    await conn.execute('''
+      CREATE TABLE IF NOT EXISTS tm_messages (
+        id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+        conversation_id UUID NOT NULL,
+        sender_guptik_id TEXT NOT NULL,
+        sender_username TEXT NOT NULL,
+        content_encrypted TEXT,
+        content_type TEXT NOT NULL DEFAULT 'text',
+        message_nonce TEXT NOT NULL,
+        reply_to_message_id UUID,
+        reaction_to_message_id UUID,
+        reaction_emoji TEXT,
+        media_vault_url_enc TEXT,
+        media_vault_key_enc TEXT,
+        media_thumbnail_enc TEXT,
+        media_file_size BIGINT,
+        media_duration_secs INTEGER,
+        media_mime_type TEXT,
+        media_downloaded BOOLEAN DEFAULT FALSE,
+        media_local_vault_path TEXT,
+        is_read BOOLEAN NOT NULL DEFAULT FALSE,
+        is_delivered BOOLEAN NOT NULL DEFAULT FALSE,
+        is_deleted_for_everyone BOOLEAN NOT NULL DEFAULT FALSE,
+        deleted_at TIMESTAMPTZ,
+        sent_at TIMESTAMPTZ,
+        delivered_at TIMESTAMPTZ,
+        read_at TIMESTAMPTZ,
+        received_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+        ratchet_message_number INTEGER,
+        ratchet_chain_id TEXT,
+        created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+      )
+    ''');
+    await conn.execute(
+      'CREATE INDEX IF NOT EXISTS idx_tm_messages_conversation ON tm_messages(conversation_id, received_at DESC)',
+    );
+    await conn.execute(
+      'CREATE INDEX IF NOT EXISTS idx_tm_messages_unread ON tm_messages(conversation_id, is_read) WHERE is_read = FALSE',
+    );
+
+    // 7. OUTGOING QUEUE
+    await conn.execute('''
+      CREATE TABLE IF NOT EXISTS tm_outgoing_queue (
+        id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+        recipient_guptik_id TEXT NOT NULL,
+        recipient_cloudflare_url TEXT NOT NULL,
+        recipient_username TEXT NOT NULL,
+        message_payload_enc TEXT NOT NULL,
+        message_type TEXT NOT NULL DEFAULT 'direct',
+        group_id UUID,
+        status TEXT NOT NULL DEFAULT 'queued',
+        retry_count INTEGER NOT NULL DEFAULT 0,
+        max_retries INTEGER NOT NULL DEFAULT 50,
+        last_attempt_at TIMESTAMPTZ,
+        next_attempt_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+        deliver_by TIMESTAMPTZ,
+        priority INTEGER NOT NULL DEFAULT 5,
+        created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+        updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+      )
+    ''');
+    await conn.execute(
+      'CREATE INDEX IF NOT EXISTS idx_tm_queue_status ON tm_outgoing_queue(status, next_attempt_at)',
+    );
+
+    // 8. GROUPS
+    await conn.execute('''
+      CREATE TABLE IF NOT EXISTS tm_groups (
+        id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+        group_name TEXT NOT NULL,
+        group_description TEXT,
+        group_avatar_vault_url TEXT,
+        host_mode TEXT NOT NULL DEFAULT 'specific_hosts',
+        admin_guptik_id TEXT NOT NULL,
+        admin_username TEXT NOT NULL,
+        invite_code TEXT UNIQUE,
+        invite_expiry TIMESTAMPTZ,
+        group_key_version INTEGER NOT NULL DEFAULT 1,
+        is_active BOOLEAN NOT NULL DEFAULT TRUE,
+        created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+        updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+      )
+    ''');
+
+    await conn.execute('''
+      CREATE TABLE IF NOT EXISTS tm_group_members (
+        id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+        group_id UUID NOT NULL,
+        member_guptik_id TEXT NOT NULL,
+        member_username TEXT NOT NULL,
+        member_cloudflare_url TEXT NOT NULL,
+        member_identity_pubkey TEXT NOT NULL,
+        role TEXT NOT NULL DEFAULT 'member',
+        is_online BOOLEAN NOT NULL DEFAULT FALSE,
+        last_seen_in_group TIMESTAMPTZ,
+        joined_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+        invited_by_guptik_id TEXT,
+        group_key_enc TEXT NOT NULL,
+        group_key_version INTEGER NOT NULL DEFAULT 1,
+        UNIQUE(group_id, member_guptik_id)
+      )
+    ''');
+
+    await conn.execute('''
+      CREATE TABLE IF NOT EXISTS tm_group_sync_log (
+        id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+        group_id UUID NOT NULL,
+        event_type TEXT NOT NULL,
+        event_data_enc TEXT NOT NULL,
+        event_sequence BIGINT NOT NULL,
+        synced_by_host_id TEXT NOT NULL,
+        synced_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+        is_distributed BOOLEAN NOT NULL DEFAULT FALSE
+      )
+    ''');
+
+    // 9. PRESENCE
+    await conn.execute('''
+      CREATE TABLE IF NOT EXISTS tm_presence (
+        id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+        guptik_id TEXT NOT NULL UNIQUE,
+        username TEXT NOT NULL,
+        is_online BOOLEAN NOT NULL DEFAULT FALSE,
+        active_conversation_id UUID,
+        active_conversation_partner TEXT,
+        device_type TEXT DEFAULT 'desktop',
+        last_heartbeat TIMESTAMPTZ,
+        last_seen TIMESTAMPTZ,
+        updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+      )
+    ''');
+
+    // 10. UNKNOWN INBOX
+    await conn.execute('''
+      CREATE TABLE IF NOT EXISTS tm_unknown_inbox (
+        id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+        source_type TEXT NOT NULL,
+        sender_identifier TEXT NOT NULL,
+        sender_username TEXT,
+        sender_cloudflare_url TEXT,
+        sender_public_key TEXT,
+        content_encrypted TEXT,
+        content_type TEXT NOT NULL DEFAULT 'text',
+        media_vault_url_enc TEXT,
+        is_read BOOLEAN NOT NULL DEFAULT FALSE,
+        action_taken TEXT,
+        action_at TIMESTAMPTZ,
+        security_scan_result TEXT,
+        security_scan_at TIMESTAMPTZ,
+        received_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+        created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+      )
+    ''');
+
+    // 11. MESSAGE REACTIONS
+    await conn.execute('''
+      CREATE TABLE IF NOT EXISTS tm_message_reactions (
+        id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+        message_id UUID NOT NULL,
+        reactor_guptik_id TEXT NOT NULL,
+        reactor_username TEXT NOT NULL,
+        emoji TEXT NOT NULL,
+        reacted_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+        UNIQUE(message_id, reactor_guptik_id)
+      )
+    ''');
+
+    // 12. SECURITY LOGS & BLOCKED USERS
+    await conn.execute('''
+      CREATE TABLE IF NOT EXISTS tm_blocked_users (
+        id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+        blocked_guptik_id TEXT NOT NULL UNIQUE,
+        blocked_username TEXT,
+        blocked_cloudflare_url TEXT,
+        reason TEXT,
+        blocked_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+      )
+    ''');
+
+    await conn.execute('''
+      CREATE TABLE IF NOT EXISTS tm_security_log (
+        id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+        event_type TEXT NOT NULL,
+        source_ip TEXT,
+        source_guptik_id TEXT,
+        details JSONB,
+        severity TEXT NOT NULL DEFAULT 'info',
+        occurred_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+      )
+    ''');
+
+    // 13. PL/PGSQL TRIGGER (Presence Notify)
+    // Needs to be generated safely
+    await conn.execute('''
+      CREATE OR REPLACE FUNCTION notify_presence_change()
+      RETURNS TRIGGER AS \$\$
+      BEGIN
+        PERFORM pg_notify(
+          'presence_changed',
+          json_build_object(
+            'guptik_id', NEW.guptik_id,
+            'username', NEW.username,
+            'is_online', NEW.is_online,
+            'active_conversation_partner', NEW.active_conversation_partner,
+            'updated_at', NEW.updated_at
+          )::text
+        );
+        RETURN NEW;
+      END;
+      \$\$ LANGUAGE plpgsql
+    ''');
+
+    await conn.execute(
+      'DROP TRIGGER IF EXISTS tm_presence_notify ON tm_presence',
+    );
+
+    await conn.execute('''
+      CREATE TRIGGER tm_presence_notify
+        AFTER INSERT OR UPDATE ON tm_presence
+        FOR EACH ROW EXECUTE FUNCTION notify_presence_change()
     ''');
   }
 
   // ==============================================================================
-  // 3. VAULT METHODS
+  // SECTION 3: VAULT METHODS
   // ==============================================================================
+
+  Future<String?> createShareSettings({
+    required String fileName,
+    required bool isPublic,
+    List<String> emails = const [],
+    DateTime? expiresAt,
+  }) async {
+    if (_connection == null || !_connection!.isOpen) await connect();
+
+    final token = isPublic ? null : _generateSecureToken();
+
+    await _connection!.execute(
+      Sql.named('''
+        INSERT INTO vault_share_file 
+        (file_name, emails_access_to, access_token, is_public, expires_at) 
+        VALUES (@fn, @emails::TEXT[], @token, @pub, @exp)
+      '''),
+      parameters: {
+        'fn': fileName,
+        'emails': emails.isEmpty ? null : emails,
+        'token': token,
+        'pub': isPublic,
+        'exp': expiresAt?.toUtc(),
+      },
+    );
+
+    return token;
+  }
 
   Future<void> saveVaultFileLocal({
     required String fileName,
@@ -325,19 +651,13 @@ class PostgresService {
     required int fileSize,
     required String mimeType,
   }) async {
-    // 1. Force connection if null
-    if (_connection == null || !_connection!.isOpen) {
-      await connect();
-    }
-
-    // 2. IF IT FAILS TO CONNECT, THROW AN ERROR (Don't just print and return!)
+    if (_connection == null || !_connection!.isOpen) await connect();
     if (_connection == null || !_connection!.isOpen) {
       throw Exception("DATABASE OFFLINE: Could not connect to Postgres!");
     }
 
     print("DEBUG: Attempting to insert $fileName into database...");
 
-    // 3. Insert the data (without a try/catch swallowing the error)
     await _connection!.execute(
       Sql.named(
         'INSERT INTO vault_files (file_name, file_path, file_size, mime_type) VALUES (@fn, @fp, @fs, @mt)',
@@ -354,7 +674,7 @@ class PostgresService {
   }
 
   // ==============================================================================
-  // 4. OLLAMA METHODS
+  // SECTION 4: OLLAMA AI METHODS
   // ==============================================================================
 
   Future<void> saveChatMessage({
@@ -364,7 +684,6 @@ class PostgresService {
     required String model,
   }) async {
     if (!_isConnected) return;
-    // Simple escape for single quotes
     final safeContent = content.replaceAll("'", "''");
 
     await _connection!.execute('''
@@ -395,7 +714,6 @@ class PostgresService {
   Future<List<Map<String, dynamic>>> getChatSessions() async {
     if (!_isConnected) return [];
 
-    // Using DISTINCT ON to get unique sessions
     final result = await _connection!.execute('''
       SELECT DISTINCT ON (session_id) 
         session_id, 
@@ -417,7 +735,6 @@ class PostgresService {
       };
     }).toList();
 
-    // Sort in Dart (Newest first)
     sessions.sort((a, b) => b['date'].compareTo(a['date']));
     return sessions;
   }
@@ -474,71 +791,73 @@ class PostgresService {
   }
 
   // ==============================================================================
-  // 5. TRUST ME METHODS
+  // SECTION 5: 🚀 TRUST ME CRYPTO METHODS (V1 ENTERPRISE)
   // ==============================================================================
 
-  Future<List<Map<String, dynamic>>> getTrustChannels() async {
-    if (!_isConnected) return [];
+  /// Checks if the node already has a Cryptographic Identity generated
+  Future<bool> hasTrustIdentity() async {
+    if (_connection == null || !_connection!.isOpen) await connect();
     final result = await _connection!.execute(
-      'SELECT id, user_name, is_active, created_at FROM trust_me_setup WHERE is_active = TRUE ORDER BY created_at DESC',
+      'SELECT 1 FROM tm_identity LIMIT 1',
     );
-    return result
-        .map(
-          (row) => {
-            'id': row[0],
-            'user_name': row[1],
-            'is_active': row[2],
-            'created_at': row[3],
-          },
-        )
-        .toList();
+    return result.isNotEmpty;
   }
 
-  Future<void> createTrustChannel(String userName, String inviteCode) async {
-    if (!_isConnected) return;
-    await _connection!.execute('''
-      INSERT INTO trust_me_setup (user_name, encryption_key, is_active)
-      VALUES ('$userName', '$inviteCode', TRUE)
-    ''');
-  }
+  /// Locks the generated Signal-Protocol Key Bundle directly into Postgres.
+  /// Called by the Desktop UI (`TrustMeScreen`) on first boot.
+  Future<void> saveTrustIdentity({
+    required String guptikId,
+    required String username,
+    required Map<String, dynamic> keyBundle,
+    required String deviceFingerprint,
+  }) async {
+    if (_connection == null || !_connection!.isOpen) await connect();
 
-  Future<void> deleteTrustChannel(String id) async {
-    if (!_isConnected) return;
-    await _connection!.execute("DELETE FROM trust_me_setup WHERE id = '$id'");
-  }
+    try {
+      print("🔐 Injecting Cryptographic Identity into local Postgres...");
 
-  Future<List<Map<String, dynamic>>> getPendingTrustRequests() async {
-    if (!_isConnected) return [];
-    final result = await _connection!.execute(
-      "SELECT id, sender_name, sender_public_url FROM trust_me_pending_requests WHERE request_status = 'pending'",
-    );
-    return result
-        .map((row) => {'id': row[0], 'name': row[1], 'url': row[2]})
-        .toList();
-  }
+      // Encode the JSON array of one-time pre-keys so Postgres JSONB accepts it
+      final oneTimeKeysJson = jsonEncode(keyBundle['one_time_prekeys']);
 
-  Future<void> acceptTrustRequest(String requestId) async {
-    if (!_isConnected) return;
-
-    // 1. Get the data from pending
-    final req = await _connection!.execute(
-      "SELECT sender_name, sender_public_url, sender_public_key FROM trust_me_pending_requests WHERE id = '$requestId'",
-    );
-
-    if (req.isNotEmpty) {
-      final data = req.first;
-      // 2. Insert into established connections
-      await createTrustChannel(data[0].toString(), data[2].toString());
-
-      // 3. Update status or delete from pending
       await _connection!.execute(
-        "DELETE FROM trust_me_pending_requests WHERE id = '$requestId'",
+        Sql.named('''
+          INSERT INTO tm_identity (
+            guptik_user_id, 
+            username, 
+            identity_public_key, 
+            identity_private_key_enc, 
+            signed_prekey_public, 
+            signed_prekey_private_enc, 
+            signed_prekey_signature,
+            one_time_prekeys,
+            one_time_prekeys_count,
+            device_fingerprint,
+            device_type
+          ) VALUES (
+            @gid, @user, @idPub, 'stored_in_secure_enclave', @spkPub, 'stored_in_secure_enclave', @spkSig, @otpk::jsonb, @otpkCount, @device, 'desktop'
+          )
+        '''),
+        parameters: {
+          'gid': guptikId,
+          'user': username,
+          'idPub': keyBundle['identity_public_key'],
+          'spkPub': keyBundle['signed_prekey_public'],
+          'spkSig': keyBundle['signed_prekey_signature'],
+          'otpk': oneTimeKeysJson,
+          'otpkCount': (keyBundle['one_time_prekeys'] as List).length,
+          'device': deviceFingerprint,
+        },
       );
+
+      print("✅ Identity securely saved to database!");
+    } catch (e) {
+      print("❌ Error saving Trust Identity: $e");
+      rethrow;
     }
   }
 
   // ==============================================================================
-  // 6. UTILITY / SCHEMA VIEWING
+  // SECTION 6: UTILITY / SCHEMA VIEWING
   // ==============================================================================
 
   Future<List<Map<String, dynamic>>> getTableSchema(String tableName) async {

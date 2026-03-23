@@ -121,8 +121,3 @@ class TrustCryptoService {
     return base64Encode(signature.bytes);
   }
 }
-
-
-
-
-//hbuyguygugyu
