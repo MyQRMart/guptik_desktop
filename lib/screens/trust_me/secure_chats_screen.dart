@@ -1,6 +1,6 @@
-import 'dart:async'; // 🚀 ADDED: For the Timer
+import 'dart:async';
 import 'package:flutter/material.dart';
-import 'package:supabase_flutter/supabase_flutter.dart'; // 🚀 ADDED: To check your own ID
+import 'package:supabase_flutter/supabase_flutter.dart';
 import '../../services/trustme/trust_me_service.dart';
 
 class SecureChatsScreen extends StatefulWidget {
@@ -19,7 +19,7 @@ class _SecureChatsScreenState extends State<SecureChatsScreen> {
   final ScrollController _scrollController = ScrollController();
   List<Map<String, dynamic>> _activeMessages = [];
 
-  // 🚀 NEW: Heartbeat Variables
+  // Heartbeat Variables
   Timer? _messageTimer;
   String _myUserId = '';
   int _previousMessageCount = 0;
@@ -27,24 +27,30 @@ class _SecureChatsScreenState extends State<SecureChatsScreen> {
   @override
   void initState() {
     super.initState();
-    // 1. Grab your own ID so we know which chat bubbles are yours (Green vs Blue)
+    // 1. Grab your own ID so we know which chat bubbles are yours
     _myUserId = Supabase.instance.client.auth.currentUser?.id ?? '';
 
     _fetchConversations();
 
-    // 🚀 2. THE HEARTBEAT: Check for new messages every 1.5 seconds!
+    // 2. THE HEARTBEAT: Check for new messages every 1.5 seconds
     _messageTimer = Timer.periodic(const Duration(milliseconds: 1500), (timer) {
       if (_selectedChat != null) {
         _loadActiveMessages();
       }
-      // Also refresh the side list occasionally to update unread counts
+
+      // Refresh the side list occasionally to update unread counts
       if (timer.tick % 3 == 0) {
         _fetchConversationsLocally();
+      }
+
+      // 3. ONLINE PRESENCE PING: Updates Supabase every 60 seconds
+      if (timer.tick % 40 == 0 && _selectedChat != null) {
+        _pingSupabaseOnlineStatus();
       }
     });
   }
 
-  // Helper to fetch side list without showing loading spinners every 4 seconds
+  // Helper to fetch side list without showing loading spinners
   Future<void> _fetchConversationsLocally() async {
     try {
       final chats = await TrustMeService.instance.getConversations();
@@ -58,7 +64,7 @@ class _SecureChatsScreenState extends State<SecureChatsScreen> {
     if (mounted) setState(() => _isLoading = false);
   }
 
-  // 🚀 NEW: Grabs the real messages from Docker and puts them on screen!
+  // Grabs the real messages from Docker and puts them on screen
   Future<void> _loadActiveMessages() async {
     if (_selectedChat == null) return;
 
@@ -75,7 +81,7 @@ class _SecureChatsScreenState extends State<SecureChatsScreen> {
       ) {
         return {
           'content': msg['content'],
-          'isMe': msg['sender_id'] == _myUserId, // 🚀 Checks if you sent it!
+          'isMe': msg['sender_id'] == _myUserId, // Checks if you sent it
           'time':
               DateTime.tryParse(msg['created_at'].toString()) ?? DateTime.now(),
         };
@@ -85,7 +91,7 @@ class _SecureChatsScreenState extends State<SecureChatsScreen> {
         _activeMessages = formattedMessages;
       });
 
-      // 🚀 Smart Auto-Scroll: Only jump to bottom if a NEW message arrived
+      // Smart Auto-Scroll: Only jump to bottom if a NEW message arrived
       if (formattedMessages.length > _previousMessageCount) {
         _previousMessageCount = formattedMessages.length;
         Future.delayed(const Duration(milliseconds: 100), () {
@@ -134,15 +140,29 @@ class _SecureChatsScreenState extends State<SecureChatsScreen> {
         conversationId: _selectedChat!.id,
         content: text,
       );
-      // The heartbeat timer will fetch the official DB copy in 1.5 seconds!
+      // The heartbeat timer will fetch the official DB copy in 1.5 seconds
     } catch (e) {
       debugPrint("Message failed to send: $e");
     }
   }
 
+  // Tells the Admin Dashboard that this chat is currently ONLINE
+  Future<void> _pingSupabaseOnlineStatus() async {
+    try {
+      if (_myUserId.isNotEmpty) {
+        await Supabase.instance.client
+            .from('trust_me_secure_invites')
+            .update({'updated_at': DateTime.now().toUtc().toIso8601String()})
+            .or('creator_id.eq.$_myUserId,connected_with.eq.$_myUserId');
+      }
+    } catch (e) {
+      debugPrint("Presence Ping Failed: $e");
+    }
+  }
+
   @override
   void dispose() {
-    // 🚀 CRITICAL: Kill the timer when leaving the screen to save memory!
+    // CRITICAL: Kill the timer when leaving the screen to save memory
     _messageTimer?.cancel();
     _messageController.dispose();
     _scrollController.dispose();
@@ -227,7 +247,7 @@ class _SecureChatsScreenState extends State<SecureChatsScreen> {
           _activeMessages.clear();
           _previousMessageCount = 0;
         });
-        // 🚀 Fetch immediately on tap so you don't have to wait 1.5s
+        // Fetch immediately on tap so you don't have to wait 1.5s
         _loadActiveMessages();
       },
       child: Container(
@@ -480,8 +500,8 @@ class _SecureChatsScreenState extends State<SecureChatsScreen> {
                           constraints: const BoxConstraints(maxWidth: 400),
                           decoration: BoxDecoration(
                             color: isMe
-                                ? const Color(0xFF006A60) // 🚀 Green for you
-                                : const Color(0xFF1E293B), // 🚀 Blue for them
+                                ? const Color(0xFF006A60) // Green for you
+                                : const Color(0xFF1E293B), // Blue for them
                             borderRadius: BorderRadius.only(
                               topLeft: const Radius.circular(16),
                               topRight: const Radius.circular(16),
