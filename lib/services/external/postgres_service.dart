@@ -34,6 +34,164 @@ class PostgresService {
   // These methods handle the raw TCP connections between the Flutter Desktop App
   // and the local Docker PostgreSQL container running on port 55432.
 
+  // ==============================================================================
+  // 🚀 ADDED: CENTRALIZED SCHEMA MIGRATIONS
+  // ==============================================================================
+  // Root cause fixed here: connectExistingUser() (used on every normal app
+  // launch for a returning user) connects with a PER-USER role that doesn't
+  // own tables like mp_commented_videos, so it could never run ALTER TABLE —
+  // only connect() (superuser, but only called once at registration) could.
+  // That meant schema changes added after a user's first registration (like
+  // is_deleted/is_edited/edited_at, or new tables like mp_comment_reactions)
+  // would NEVER get created for any returning user, causing 500 errors on
+  // routes that depend on them.
+  //
+  // This method opens its OWN short-lived superuser connection specifically
+  // for migrations, independent of whichever connection handles the actual
+  // session — and is called from BOTH connect() and connectExistingUser(),
+  // so migrations always run on every launch, regardless of login path.
+  Future<void> _runSchemaMigrations() async {
+    Connection? migrationConn;
+    try {
+      migrationConn = await Connection.open(
+        Endpoint(
+          host: 'localhost',
+          port: 55432,
+          database: 'postgres',
+          username: 'postgres',
+          password: dockerMasterPassword,
+        ),
+        settings: const ConnectionSettings(sslMode: SslMode.disable),
+      );
+
+      try {
+        await migrationConn.execute(
+          'ALTER TABLE mp_channels ADD COLUMN IF NOT EXISTS tunnel_url TEXT;',
+        );
+        await migrationConn.execute(
+          'ALTER TABLE mp_channels ADD COLUMN IF NOT EXISTS owner_uid UUID;',
+        );
+        print("✅ DB Check: mp_channels profile routing columns are ready.");
+      } catch (_) {}
+
+      try {
+        await migrationConn.execute(
+          'ALTER TABLE mp_commented_videos ADD COLUMN IF NOT EXISTS viewer_name TEXT DEFAULT \'Creator\';',
+        );
+        await migrationConn.execute(
+          'ALTER TABLE mp_commented_videos ADD COLUMN IF NOT EXISTS parent_comment_id TEXT;',
+        );
+        await migrationConn.execute(
+          'ALTER TABLE mp_commented_videos ADD COLUMN IF NOT EXISTS is_deleted BOOLEAN DEFAULT FALSE;',
+        );
+        await migrationConn.execute(
+          'ALTER TABLE mp_commented_videos ADD COLUMN IF NOT EXISTS is_edited BOOLEAN DEFAULT FALSE;',
+        );
+        await migrationConn.execute(
+          'ALTER TABLE mp_commented_videos ADD COLUMN IF NOT EXISTS edited_at TIMESTAMPTZ;',
+        );
+        print("✅ DB Check: mp_commented_videos migration columns are ready.");
+      } catch (e) {
+        print("Migration warning: $e");
+      }
+
+      try {
+        await migrationConn.execute('''
+          CREATE TABLE IF NOT EXISTS mp_comment_reactions (
+            id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+            comment_id TEXT NOT NULL,
+            reactor_uid TEXT NOT NULL,
+            reaction_type TEXT NOT NULL,
+            created_at TIMESTAMPTZ DEFAULT NOW(),
+            UNIQUE (comment_id, reactor_uid)
+          )
+        ''');
+        print("✅ DB Check: mp_comment_reactions table is ready.");
+      } catch (e) {
+        print("Migration warning: $e");
+      }
+
+      try {
+        await migrationConn.execute('''
+          CREATE TABLE IF NOT EXISTS mp_comment_reports (
+            id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+            comment_id TEXT NOT NULL,
+            reporter_uid TEXT NOT NULL,
+            reason TEXT,
+            created_at TIMESTAMPTZ DEFAULT NOW()
+          )
+        ''');
+        print("✅ DB Check: mp_comment_reports table is ready.");
+      } catch (e) {
+        print("Migration warning: $e");
+      }
+
+      try {
+        await migrationConn.execute(
+          'ALTER TABLE tm_contacts ADD COLUMN IF NOT EXISTS custom_username TEXT;',
+        );
+        print("✅ DB Check: custom_username column is ready.");
+      } catch (_) {}
+
+      try {
+        await migrationConn.execute(
+          'ALTER TABLE mp_videos ADD COLUMN IF NOT EXISTS made_for_kids BOOLEAN DEFAULT FALSE;',
+        );
+        await migrationConn.execute(
+          "ALTER TABLE mp_videos ADD COLUMN IF NOT EXISTS age_rating TEXT DEFAULT 'all';",
+        );
+        print("✅ DB Check: mp_videos audience columns are ready.");
+      } catch (_) {}
+
+      try {
+        await migrationConn.execute(
+          'ALTER TABLE mp_videos ADD COLUMN IF NOT EXISTS repost_id UUID;',
+        );
+        print("✅ DB Check: mp_videos.repost_id column is ready.");
+      } catch (_) {}
+
+      try {
+        await migrationConn.execute('''
+          CREATE TABLE IF NOT EXISTS mp_watcher_interest (
+            id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+            video_id TEXT NOT NULL,
+            creator_uid TEXT,
+            watcher_uid TEXT NOT NULL,
+            interest TEXT NOT NULL CHECK (interest IN ('interested','not_interested')),
+            created_at TIMESTAMPTZ DEFAULT NOW(),
+            UNIQUE(video_id, watcher_uid)
+          )
+        ''');
+        await migrationConn.execute(
+          'CREATE INDEX IF NOT EXISTS idx_mp_watcher_interest_watcher ON mp_watcher_interest(watcher_uid);',
+        );
+        print("✅ DB Check: mp_watcher_interest table is ready.");
+      } catch (_) {}
+
+      try {
+        await migrationConn.execute('''
+          CREATE TABLE IF NOT EXISTS mp_reports (
+            id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+            by_user TEXT NOT NULL,
+            video_id TEXT NOT NULL,
+            type TEXT NOT NULL,
+            description TEXT,
+            image_url TEXT,
+            status TEXT DEFAULT 'new',
+            synced_to_admin BOOLEAN DEFAULT FALSE,
+            created_at TIMESTAMPTZ DEFAULT NOW(),
+            updated_at TIMESTAMPTZ DEFAULT NOW()
+          )
+        ''');
+        print("✅ DB Check: mp_reports table is ready.");
+      } catch (_) {}
+    } catch (e) {
+      print("⚠️ Schema migration connection failed (will retry next launch): $e");
+    } finally {
+      await migrationConn?.close();
+    }
+  }
+
   Future<void> connect() async {
     if (_connection != null && _connection!.isOpen) return;
 
@@ -51,6 +209,11 @@ class PostgresService {
       );
       _isConnected = true;
       print("✅ Database Connected!");
+
+      // 🚀 All schema migrations now run through the shared, always-superuser
+      // _runSchemaMigrations() — see that method for why this consolidation
+      // was necessary.
+      await _runSchemaMigrations();
     } catch (e) {
       print("❌ Database Connection Failed: $e");
     }
@@ -67,6 +230,14 @@ class PostgresService {
     required String userPassword,
   }) async {
     try {
+      // 🚀 FIX: run schema migrations FIRST, using a proper superuser
+      // connection, before establishing the normal per-user session below.
+      // Previously, returning users only ever ran the per-user CREATE TABLE
+      // blocks further down — any ALTER TABLE or new-table migration added
+      // after a user's initial registration would never take effect for
+      // them, since the per-user role can't ALTER tables it doesn't own.
+      await _runSchemaMigrations();
+
       final safeUser = email.replaceAll(RegExp(r'[^a-zA-Z0-9]'), '_');
       _connection = await Connection.open(
         Endpoint(
@@ -80,12 +251,86 @@ class PostgresService {
       );
       _isConnected = true;
       print("DB: Re-connected successfully as $safeUser");
+      // 🚀 MIGRATION NOTE: Schema migrations (like custom_username column) run
+      // only in connect() as the postgres superuser. The per-user role doesn't
+      // own the tables, so ALTER TABLE would fail with "must be owner of table".
+      // The column is guaranteed to exist after the initial connect() runs.
+
+      // 🚀 REPOST TABLE SELF-HEALING:
+      // mp_repost_videos is created during registration (initializeUserDatabase ->
+      // setupDefaultDatabase), but existing users who only run connectExistingUser()
+      // on launch never hit that path. This idempotent CREATE guarantees the table
+      // exists for everyone, matching how the other mp_* tables self-heal above.
+      try {
+        await _connection!.execute('''
+          CREATE TABLE IF NOT EXISTS mp_repost_videos (
+            id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+            original_video_id TEXT NOT NULL,
+            original_creator_uid TEXT NOT NULL,
+            original_creator_name TEXT DEFAULT '',
+            original_channel_name TEXT DEFAULT '',
+            reposter_uid TEXT NOT NULL,
+            reposter_channel_name TEXT DEFAULT '',
+            repost_comment TEXT,
+            reposted_at TIMESTAMPTZ DEFAULT NOW(),
+            repost_likes INTEGER DEFAULT 0,
+            repost_comments INTEGER DEFAULT 0
+          )
+        ''');
+        print("✅ DB Check: mp_repost_videos table is ready.");
+      } catch (_) {}
+
+      // 🚀 SHARED VIDEOS TABLE SELF-HEALING:
+      // mp_shared_videos is created during registration (initializeUserDatabase ->
+      // setupDefaultDatabase), but existing users who only run connectExistingUser()
+      // on launch never hit that path. This idempotent CREATE guarantees the table
+      // exists for everyone, matching how the other mp_* tables self-heal above.
+      try {
+        await _connection!.execute('''
+          CREATE TABLE IF NOT EXISTS mp_shared_videos (
+            id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+            video_id TEXT NOT NULL,
+            creator_uid TEXT,
+            shared_timestamp TIMESTAMPTZ DEFAULT NOW(),
+            share_method TEXT DEFAULT 'link',
+            share_timestamp_in_video DECIMAL,
+            recipient_uids TEXT[] DEFAULT '{}',
+            opened_by_receiver BOOLEAN DEFAULT FALSE,
+            is_incognito BOOLEAN DEFAULT FALSE
+          )
+        ''');
+        print("✅ DB Check: mp_shared_videos table is ready.");
+      } catch (_) {}
+
+      // 🚀 DRAFT VIDEOS TABLE SELF-HEALING:
+      // mp_draft_videos is created during registration (initializeUserDatabase ->
+      // setupDefaultDatabase), but existing users who only run connectExistingUser()
+      // on launch never hit that path. This idempotent CREATE guarantees the table
+      // exists for everyone. The Drafts folder (desktop_system_folder_screen) queries
+      // this table directly, so it must exist on every launch or the folder errors.
+      try {
+        await _connection!.execute('''
+          CREATE TABLE IF NOT EXISTS mp_draft_videos (
+            id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+            channel_id TEXT NOT NULL,
+            title TEXT,
+            description TEXT,
+            tags TEXT[] DEFAULT '{}',
+            file_path_temp TEXT,
+            thumbnail_temp_path TEXT,
+            last_edited_at TIMESTAMPTZ DEFAULT NOW(),
+            schedule_publish_at TIMESTAMPTZ,
+            cross_post_platforms TEXT[] DEFAULT '{}',
+            created_at TIMESTAMPTZ DEFAULT NOW()
+          )
+        ''');
+        print("✅ DB Check: mp_draft_videos table is ready.");
+      } catch (_) {}
     } catch (e) {
       print("DB Re-connect Error: $e");
       rethrow;
     }
   }
-
   // ==============================================================================
   // SECTION 2: INITIALIZATION & TABLE SETUP
   // ==============================================================================
@@ -214,7 +459,7 @@ class PostgresService {
     ''');
 
     // -------------------------------------------------------------------------
-    // PART B: OLLAMA AI & SECURITY SCHEMA
+    // PART B: OLLAMA AI
     // -------------------------------------------------------------------------
     await conn.execute('''
       CREATE TABLE IF NOT EXISTS ollama_models (
@@ -236,26 +481,6 @@ class PostgresService {
         role TEXT NOT NULL,
         content TEXT NOT NULL,
         created_at TIMESTAMPTZ DEFAULT NOW()
-      )
-    ''');
-
-    await conn.execute('''
-      CREATE TABLE IF NOT EXISTS security_calls (
-        id SERIAL PRIMARY KEY,
-        caller_name TEXT,
-        caller_number TEXT NOT NULL,
-        call_type TEXT,
-        duration_seconds INT,
-        timestamp TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-      )
-    ''');
-
-    await conn.execute('''
-      CREATE TABLE IF NOT EXISTS security_messages (
-        id SERIAL PRIMARY KEY,
-        sender_number TEXT NOT NULL,
-        message_body TEXT,
-        timestamp TIMESTAMP DEFAULT CURRENT_TIMESTAMP
       )
     ''');
 
@@ -295,6 +520,7 @@ class PostgresService {
         id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
         contact_guptik_id TEXT NOT NULL UNIQUE,
         contact_username TEXT NOT NULL,
+        custom_username TEXT,
         contact_cloudflare_url TEXT NOT NULL,
         contact_identity_pubkey TEXT NOT NULL,
         contact_signed_prekey TEXT NOT NULL,
@@ -310,6 +536,14 @@ class PostgresService {
         updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
       )
     ''');
+
+    // SAFEGUARD
+    try {
+      await conn.execute(
+        'ALTER TABLE tm_contacts ADD COLUMN IF NOT EXISTS custom_username TEXT;',
+      );
+    } catch (_) {}
+
     await conn.execute(
       'CREATE INDEX IF NOT EXISTS idx_tm_contacts_username ON tm_contacts(contact_username)',
     );
@@ -582,7 +816,6 @@ class PostgresService {
     ''');
 
     // 13. PL/PGSQL TRIGGER (Presence Notify)
-    // Needs to be generated safely
     await conn.execute('''
       CREATE OR REPLACE FUNCTION notify_presence_change()
       RETURNS TRIGGER AS \$\$
@@ -605,11 +838,497 @@ class PostgresService {
     await conn.execute(
       'DROP TRIGGER IF EXISTS tm_presence_notify ON tm_presence',
     );
-
     await conn.execute('''
       CREATE TRIGGER tm_presence_notify
         AFTER INSERT OR UPDATE ON tm_presence
         FOR EACH ROW EXECUTE FUNCTION notify_presence_change()
+    ''');
+
+    // -------------------------------------------------------------------------
+    // 🚀 PART D: GUPTIK PLAYER (MEDIA ECOSYSTEM)
+    // -------------------------------------------------------------------------
+
+    await conn.execute('''
+      CREATE TABLE IF NOT EXISTS mp_channels (
+        id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+        channel_id TEXT NOT NULL UNIQUE,
+        user_id UUID NOT NULL,
+        owner_uid UUID,
+        tunnel_url TEXT,
+        channel_name TEXT NOT NULL,
+        bio TEXT DEFAULT '',
+        avatar_path TEXT,
+        banner_path TEXT,
+        subscriber_count INTEGER DEFAULT 0,
+        total_views INTEGER DEFAULT 0,
+        verified BOOLEAN DEFAULT FALSE,
+        location TEXT DEFAULT '',
+        language TEXT DEFAULT 'en',
+        category_tags TEXT[] DEFAULT '{}',
+        monetization_enabled BOOLEAN DEFAULT FALSE,
+        stripe_connected BOOLEAN DEFAULT FALSE,
+        payout_email TEXT,
+        total_earnings_local DECIMAL DEFAULT 0,
+        created_at TIMESTAMPTZ DEFAULT NOW(),
+        updated_at TIMESTAMPTZ DEFAULT NOW()
+      )
+    ''');
+
+    await conn.execute('''
+      CREATE TABLE IF NOT EXISTS mp_videos (
+        id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+        channel_id TEXT NOT NULL REFERENCES mp_channels(channel_id),
+        title TEXT NOT NULL,
+        description TEXT DEFAULT '',
+        tags TEXT[] DEFAULT '{}',
+        creator_tags TEXT[] DEFAULT '{}',
+        community_tags TEXT[] DEFAULT '{}',
+        file_path TEXT NOT NULL,
+        thumbnail_path TEXT,
+        preview_gif_path TEXT,
+        upload_timestamp TIMESTAMPTZ DEFAULT NOW(),
+        duration_seconds INTEGER,
+        qualities JSONB DEFAULT '{}',
+        language TEXT DEFAULT 'en',
+        location TEXT,
+        visibility TEXT DEFAULT 'public',
+        is_reel BOOLEAN DEFAULT FALSE,
+        is_live BOOLEAN DEFAULT FALSE,
+        live_start_timestamp TIMESTAMPTZ,
+        live_ended_timestamp TIMESTAMPTZ,
+        category TEXT,
+        age_rating TEXT DEFAULT 'all',
+        made_for_kids BOOLEAN DEFAULT FALSE,
+        copyright_info TEXT,
+        monetization_enabled BOOLEAN DEFAULT FALSE,
+        sticker_products JSONB DEFAULT '[]',
+        sticker_services JSONB DEFAULT '[]',
+        view_count_local INTEGER DEFAULT 0,
+        like_count_local INTEGER DEFAULT 0,
+        repost_count_local INTEGER DEFAULT 0,
+        save_count_local INTEGER DEFAULT 0,
+        comment_count_local INTEGER DEFAULT 0,
+        share_count_local INTEGER DEFAULT 0,
+        playlist_count_local INTEGER DEFAULT 0,
+        reaction_heart_count INTEGER DEFAULT 0,
+        reaction_fire_count INTEGER DEFAULT 0,
+        reaction_thumbs_up_count INTEGER DEFAULT 0,
+        reaction_clap_count INTEGER DEFAULT 0,
+        reaction_laugh_count INTEGER DEFAULT 0,
+        reaction_surprised_count INTEGER DEFAULT 0,
+        reaction_sad_count INTEGER DEFAULT 0,
+        average_watch_percentage DECIMAL DEFAULT 0,
+        unique_viewers_local INTEGER DEFAULT 0,
+        is_deleted BOOLEAN DEFAULT FALSE,
+        deleted_at TIMESTAMPTZ
+      )
+    ''');
+    await conn.execute(
+      'CREATE INDEX IF NOT EXISTS idx_mp_videos_channel ON mp_videos(channel_id)',
+    );
+    await conn.execute(
+      'CREATE INDEX IF NOT EXISTS idx_mp_videos_upload ON mp_videos(upload_timestamp DESC)',
+    );
+
+    // 🚀 AUDIENCE MIGRATION (self-healing):
+    // Older installs created mp_videos before made_for_kids / age_rating existed.
+    // Because CREATE TABLE IF NOT EXISTS skips an already-existing table, those
+    // stale tables keep missing columns and the upload (PlayerUploadService STEP 3)
+    // fails with 42703 "column made_for_kids does not exist". Adding the columns
+    // here on every init guarantees they exist even when the table pre-dates them.
+    try {
+      await conn.execute(
+        'ALTER TABLE mp_videos ADD COLUMN IF NOT EXISTS made_for_kids BOOLEAN DEFAULT FALSE;',
+      );
+      await conn.execute(
+        "ALTER TABLE mp_videos ADD COLUMN IF NOT EXISTS age_rating TEXT DEFAULT 'all';",
+      );
+      print("✅ DB Check: mp_videos audience columns are ready.");
+    } catch (_) {}
+
+    // 🚀 REPOST ATTRIBUTION: repost_id self-references mp_videos(id). NULL for
+    // original uploads; set to the original video's id when this row is a
+    // repost. Added via ALTER for existing installs (self-healing above) and
+    // here for fresh installs.
+    try {
+      await conn.execute(
+        'ALTER TABLE mp_videos ADD COLUMN IF NOT EXISTS repost_id UUID;',
+      );
+      print("✅ DB Check: mp_videos.repost_id column is ready.");
+    } catch (_) {}
+
+    // -------------------------------------------------------------
+    // 🚀 WATCHER INTEREST: per-watcher interested / not_interested feedback.
+    // -------------------------------------------------------------
+    await conn.execute('''
+      CREATE TABLE IF NOT EXISTS mp_watcher_interest (
+        id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+        video_id TEXT NOT NULL,
+        creator_uid TEXT,
+        watcher_uid TEXT NOT NULL,
+        interest TEXT NOT NULL CHECK (interest IN ('interested','not_interested')),
+        created_at TIMESTAMPTZ DEFAULT NOW(),
+        UNIQUE(video_id, watcher_uid)
+      )
+    ''');
+    await conn.execute(
+      'CREATE INDEX IF NOT EXISTS idx_mp_watcher_interest_watcher ON mp_watcher_interest(watcher_uid)',
+    );
+
+    // -------------------------------------------------------------
+    // 🚀 REPORTS: local copy of reports filed by this user, mirrored to the
+    // admin Supabase `mp_reports` table.
+    // -------------------------------------------------------------
+    await conn.execute('''
+      CREATE TABLE IF NOT EXISTS mp_reports (
+        id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+        by_user TEXT NOT NULL,
+        video_id TEXT NOT NULL,
+        type TEXT NOT NULL,
+        description TEXT,
+        image_url TEXT,
+        status TEXT DEFAULT 'new',
+        synced_to_admin BOOLEAN DEFAULT FALSE,
+        created_at TIMESTAMPTZ DEFAULT NOW(),
+        updated_at TIMESTAMPTZ DEFAULT NOW()
+      )
+    ''');
+
+    // -------------------------------------------------------------
+    // 🚀 CHANNEL SUBSCRIPTIONS TRACKER
+    // -------------------------------------------------------------
+    await conn.execute('''
+      CREATE TABLE IF NOT EXISTS mp_channel_subscriptions (
+        subscriber_uid TEXT,
+        channel_id TEXT,
+        PRIMARY KEY (subscriber_uid, channel_id)
+      )
+    ''');
+
+    await conn.execute('''
+      CREATE TABLE IF NOT EXISTS mp_video_versions (
+        id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+        video_id UUID NOT NULL REFERENCES mp_videos(id),
+        quality TEXT NOT NULL,
+        format TEXT DEFAULT 'mp4',
+        file_size BIGINT,
+        storage_path TEXT NOT NULL,
+        transcoded_at TIMESTAMPTZ DEFAULT NOW(),
+        UNIQUE(video_id, quality)
+      )
+    ''');
+
+    await conn.execute('''
+      CREATE TABLE IF NOT EXISTS mp_upload_queue (
+        id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+        video_id UUID REFERENCES mp_videos(id),
+        status TEXT DEFAULT 'pending',
+        progress_percent DECIMAL DEFAULT 0,
+        error_log TEXT,
+        retry_count INTEGER DEFAULT 0,
+        max_retries INTEGER DEFAULT 5,
+        started_at TIMESTAMPTZ DEFAULT NOW(),
+        completed_at TIMESTAMPTZ
+      )
+    ''');
+
+    await conn.execute('''
+      CREATE TABLE IF NOT EXISTS mp_sticker_products_catalog (
+        id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+        video_id UUID NOT NULL REFERENCES mp_videos(id),
+        product_id TEXT NOT NULL UNIQUE,
+        timestamp_in_video DECIMAL NOT NULL,
+        clickable_zone JSONB,
+        product_name TEXT NOT NULL,
+        price DECIMAL,
+        currency TEXT DEFAULT 'USD',
+        description TEXT,
+        link_url TEXT,
+        image_path TEXT,
+        stock_status TEXT DEFAULT 'in_stock',
+        sales_count_local INTEGER DEFAULT 0,
+        click_count_local INTEGER DEFAULT 0,
+        purchase_initiated_count INTEGER DEFAULT 0,
+        purchase_completed_count INTEGER DEFAULT 0,
+        is_active BOOLEAN DEFAULT TRUE,
+        created_at TIMESTAMPTZ DEFAULT NOW(),
+        updated_at TIMESTAMPTZ DEFAULT NOW()
+      )
+    ''');
+
+    await conn.execute('''
+      CREATE TABLE IF NOT EXISTS mp_sticker_services_catalog (
+        id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+        video_id UUID NOT NULL REFERENCES mp_videos(id),
+        service_id TEXT NOT NULL UNIQUE,
+        timestamp_in_video DECIMAL NOT NULL,
+        clickable_zone JSONB,
+        service_name TEXT NOT NULL,
+        price DECIMAL,
+        currency TEXT DEFAULT 'USD',
+        description TEXT,
+        availability_slots JSONB DEFAULT '[]',
+        booking_count_local INTEGER DEFAULT 0,
+        is_active BOOLEAN DEFAULT TRUE,
+        trustme_message_template TEXT,
+        created_at TIMESTAMPTZ DEFAULT NOW()
+      )
+    ''');
+
+    await conn.execute('''
+      CREATE TABLE IF NOT EXISTS mp_playlists (
+        id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+        channel_id TEXT NOT NULL,
+        name TEXT NOT NULL,
+        description TEXT DEFAULT '',
+        is_public BOOLEAN DEFAULT TRUE,
+        cover_image_path TEXT,
+        video_count INTEGER DEFAULT 0,
+        total_duration_seconds INTEGER DEFAULT 0,
+        created_at TIMESTAMPTZ DEFAULT NOW(),
+        updated_at TIMESTAMPTZ DEFAULT NOW()
+      )
+    ''');
+
+    await conn.execute('''
+      CREATE TABLE IF NOT EXISTS mp_playlist_videos (
+        playlist_id UUID NOT NULL REFERENCES mp_playlists(id),
+        video_id UUID NOT NULL REFERENCES mp_videos(id),
+        position INTEGER NOT NULL DEFAULT 0,
+        added_at TIMESTAMPTZ DEFAULT NOW(),
+        PRIMARY KEY (playlist_id, video_id)
+      )
+    ''');
+
+    await conn.execute('''
+      CREATE TABLE IF NOT EXISTS mp_draft_videos (
+        id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+        channel_id TEXT NOT NULL,
+        title TEXT,
+        description TEXT,
+        tags TEXT[] DEFAULT '{}',
+        file_path_temp TEXT,
+        thumbnail_temp_path TEXT,
+        last_edited_at TIMESTAMPTZ DEFAULT NOW(),
+        schedule_publish_at TIMESTAMPTZ,
+        cross_post_platforms TEXT[] DEFAULT '{}',
+        created_at TIMESTAMPTZ DEFAULT NOW()
+      )
+    ''');
+
+    // 🚀 REPOSTS: Re-shared videos with original creator attribution.
+    // Centralized here (instead of only inside PlayerOrganizationService) so
+    // the table is guaranteed to exist on DB init, matching every other mp_*
+    // table. PlayerOrganizationService also has a CREATE TABLE IF NOT EXISTS
+    // guard, so this is idempotent and safe on existing installs.
+    await conn.execute('''
+      CREATE TABLE IF NOT EXISTS mp_repost_videos (
+        id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+        original_video_id TEXT NOT NULL,
+        original_creator_uid TEXT NOT NULL,
+        original_creator_name TEXT DEFAULT '',
+        original_channel_name TEXT DEFAULT '',
+        reposter_uid TEXT NOT NULL,
+        reposter_channel_name TEXT DEFAULT '',
+        repost_comment TEXT,
+        reposted_at TIMESTAMPTZ DEFAULT NOW(),
+        repost_likes INTEGER DEFAULT 0,
+        repost_comments INTEGER DEFAULT 0
+      )
+    ''');
+
+    await conn.execute('''
+      CREATE TABLE IF NOT EXISTS mp_cross_post_status (
+        id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+        video_id TEXT NOT NULL,
+        platform TEXT NOT NULL,
+        post_type TEXT,
+        platform_post_id TEXT,
+        status TEXT DEFAULT 'pending',
+        error_message TEXT,
+        published_at TIMESTAMPTZ,
+        created_at TIMESTAMPTZ DEFAULT NOW()
+      )
+    ''');
+
+    await conn.execute('''
+      CREATE TABLE IF NOT EXISTS mp_watch_history (
+        id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+        video_id TEXT NOT NULL,
+        creator_channel_id TEXT NOT NULL,
+        creator_uid TEXT,
+        watch_timestamp TIMESTAMPTZ DEFAULT NOW(),
+        watch_duration_seconds INTEGER DEFAULT 0,
+        percent_completed DECIMAL DEFAULT 0,
+        device_type TEXT DEFAULT 'desktop',
+        paused_count INTEGER DEFAULT 0,
+        rewind_count INTEGER DEFAULT 0,
+        speed_changes INTEGER DEFAULT 0,
+        quality_watched TEXT DEFAULT 'auto',
+        completed BOOLEAN DEFAULT FALSE,
+        session_id TEXT NOT NULL,
+        is_incognito BOOLEAN DEFAULT FALSE
+      )
+    ''');
+    await conn.execute(
+      'CREATE INDEX IF NOT EXISTS idx_mp_watch_history_video ON mp_watch_history(video_id)',
+    );
+
+    await conn.execute('''
+      CREATE TABLE IF NOT EXISTS mp_watch_history_tags (
+        history_id UUID NOT NULL REFERENCES mp_watch_history(id),
+        tag TEXT NOT NULL,
+        weight DECIMAL DEFAULT 1.0,
+        PRIMARY KEY (history_id, tag)
+      )
+    ''');
+
+    await conn.execute('''
+      CREATE TABLE IF NOT EXISTS mp_liked_videos (
+        id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+        video_id TEXT NOT NULL,
+        creator_uid TEXT,
+        liked_timestamp TIMESTAMPTZ DEFAULT NOW(),
+        reaction_type TEXT NOT NULL DEFAULT 'heart',
+        is_incognito BOOLEAN DEFAULT FALSE
+      )
+    ''');
+
+    // -------------------------------------------------------------
+    // 🚀 THE GATEKEEPER: Unique Video Views Tracker
+    // Prevents the same user from spamming views on a single video
+    // -------------------------------------------------------------
+    await conn.execute('''
+        CREATE TABLE IF NOT EXISTS mp_viewed_videos (
+          id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+          video_id TEXT NOT NULL,
+          viewer_uid TEXT NOT NULL,
+          viewed_at TIMESTAMPTZ DEFAULT NOW(),
+          UNIQUE(video_id, viewer_uid) -- This forces 1 view per person!
+        )
+      ''');
+
+    await conn.execute('''
+      CREATE TABLE IF NOT EXISTS mp_commented_videos (
+        id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+        video_id TEXT NOT NULL,
+        creator_uid TEXT,
+        comment_text TEXT NOT NULL,
+        comment_timestamp TIMESTAMPTZ DEFAULT NOW(),
+        parent_comment_id TEXT,
+        viewer_name TEXT DEFAULT 'Creator',
+        likes_on_comment_local INTEGER DEFAULT 0,
+        reaction_heart INTEGER DEFAULT 0,
+        reaction_laugh INTEGER DEFAULT 0,
+        reaction_agree INTEGER DEFAULT 0,
+        reaction_disagree INTEGER DEFAULT 0,
+        routed_to_trustme BOOLEAN DEFAULT FALSE,
+        is_incognito BOOLEAN DEFAULT FALSE,
+        is_deleted BOOLEAN DEFAULT FALSE,
+        is_edited BOOLEAN DEFAULT FALSE,
+        edited_at TIMESTAMPTZ
+      )
+    ''');
+
+    await conn.execute('''
+      CREATE TABLE IF NOT EXISTS mp_saved_videos (
+        id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+        video_id TEXT NOT NULL,
+        creator_uid TEXT,
+        saved_timestamp TIMESTAMPTZ DEFAULT NOW(),
+        folder_name TEXT DEFAULT 'Default',
+        is_incognito BOOLEAN DEFAULT FALSE,
+        UNIQUE(video_id, creator_uid) -- 🚀 Prevents duplicate saves!
+      )
+    ''');
+
+    await conn.execute('''
+      CREATE TABLE IF NOT EXISTS mp_shared_videos (
+        id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+        video_id TEXT NOT NULL,
+        creator_uid TEXT,
+        shared_timestamp TIMESTAMPTZ DEFAULT NOW(),
+        share_method TEXT DEFAULT 'link',
+        share_timestamp_in_video DECIMAL,
+        recipient_uids TEXT[] DEFAULT '{}',
+        opened_by_receiver BOOLEAN DEFAULT FALSE,
+        is_incognito BOOLEAN DEFAULT FALSE
+      )
+    ''');
+
+    await conn.execute('''
+      CREATE TABLE IF NOT EXISTS mp_recommendation_profile (
+        user_id UUID PRIMARY KEY,
+        top_categories JSONB DEFAULT '{}',
+        top_tags JSONB DEFAULT '{}',
+        preferred_languages TEXT[] DEFAULT '{en}',
+        location_bias TEXT,
+        time_of_day_patterns JSONB DEFAULT '{}',
+        ollama_embedding_vector DECIMAL[],
+        last_ollama_training_at TIMESTAMPTZ,
+        created_at TIMESTAMPTZ DEFAULT NOW(),
+        updated_at TIMESTAMPTZ DEFAULT NOW()
+      )
+    ''');
+
+    await conn.execute('''
+      CREATE TABLE IF NOT EXISTS mp_live_stream_sessions (
+        id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+        video_id TEXT NOT NULL UNIQUE,
+        channel_id TEXT NOT NULL,
+        webrtc_offer TEXT,
+        webrtc_candidates JSONB DEFAULT '[]',
+        viewer_count INTEGER DEFAULT 0,
+        started_at TIMESTAMPTZ DEFAULT NOW(),
+        ended_at TIMESTAMPTZ,
+        total_watch_time_seconds INTEGER DEFAULT 0,
+        total_messages INTEGER DEFAULT 0,
+        total_gifts INTEGER DEFAULT 0,
+        is_active BOOLEAN DEFAULT TRUE
+      )
+    ''');
+
+    await conn.execute('''
+      CREATE TABLE IF NOT EXISTS tm_call_log (
+        id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+        call_id TEXT NOT NULL UNIQUE,
+        contact_guptik_id TEXT NOT NULL,
+        contact_username TEXT,
+        call_type TEXT NOT NULL DEFAULT 'video',
+        direction TEXT NOT NULL,
+        status TEXT NOT NULL DEFAULT 'ringing',
+        sdp_offer TEXT,
+        sdp_answer TEXT,
+        ice_candidates JSONB DEFAULT '[]',
+        webrtc_session_state TEXT,
+        started_at TIMESTAMPTZ,
+        answered_at TIMESTAMPTZ,
+        ended_at TIMESTAMPTZ,
+        duration_seconds INTEGER DEFAULT 0,
+        call_quality TEXT DEFAULT 'good',
+        is_muted_local BOOLEAN DEFAULT FALSE,
+        is_video_off_local BOOLEAN DEFAULT FALSE,
+        created_at TIMESTAMPTZ DEFAULT NOW()
+      )
+    ''');
+
+    // Reaction Trigger (Creator Side Aggregation)
+    await conn.execute('''
+      CREATE OR REPLACE FUNCTION update_reaction_counts()
+      RETURNS TRIGGER AS \$\$
+      BEGIN
+          UPDATE mp_videos SET
+              reaction_heart_count = (SELECT COUNT(*) FROM mp_liked_videos WHERE video_id = NEW.video_id AND reaction_type = 'heart'),
+              reaction_fire_count = (SELECT COUNT(*) FROM mp_liked_videos WHERE video_id = NEW.video_id AND reaction_type = 'fire'),
+              reaction_thumbs_up_count = (SELECT COUNT(*) FROM mp_liked_videos WHERE video_id = NEW.video_id AND reaction_type = 'thumbs_up'),
+              reaction_clap_count = (SELECT COUNT(*) FROM mp_liked_videos WHERE video_id = NEW.video_id AND reaction_type = 'clap'),
+              reaction_laugh_count = (SELECT COUNT(*) FROM mp_liked_videos WHERE video_id = NEW.video_id AND reaction_type = 'laugh'),
+              reaction_surprised_count = (SELECT COUNT(*) FROM mp_liked_videos WHERE video_id = NEW.video_id AND reaction_type = 'surprised'),
+              reaction_sad_count = (SELECT COUNT(*) FROM mp_liked_videos WHERE video_id = NEW.video_id AND reaction_type = 'sad')
+          WHERE id = NEW.video_id::UUID;
+          RETURN NEW;
+      END;
+      \$\$ LANGUAGE plpgsql
     ''');
   }
 
@@ -674,7 +1393,7 @@ class PostgresService {
   }
 
   // ==============================================================================
-  // SECTION 4: OLLAMA AI METHODS
+  // SECTION 4: AI NEURAL MEMORY & CONFIG METHODS (Multi-Provider Compatible)
   // ==============================================================================
 
   Future<void> saveChatMessage({
@@ -685,10 +1404,11 @@ class PostgresService {
   }) async {
     if (!_isConnected) return;
     final safeContent = content.replaceAll("'", "''");
+    final safeModel = model.replaceAll("'", "''");
 
     await _connection!.execute('''
       INSERT INTO ollama_chat_memory (session_id, role, content, model_used)
-      VALUES ('$sessionId', '$role', '$safeContent', '$model')
+      VALUES ('$sessionId', '$role', '$safeContent', '$safeModel')
     ''');
   }
 
@@ -739,7 +1459,7 @@ class PostgresService {
     return sessions;
   }
 
-  Future<void> initOllamaTableUpdates() async {
+  Future<void> initAiTableUpdates() async {
     if (!_isConnected) return;
     try {
       await _connection!.execute(
@@ -748,12 +1468,13 @@ class PostgresService {
     } catch (_) {}
   }
 
-  Future<void> saveOllamaModel(String modelTag) async {
+  Future<void> saveAiModel(String modelTag) async {
     if (!_isConnected) return;
-    await initOllamaTableUpdates();
+    await initAiTableUpdates();
+    final safeTag = modelTag.replaceAll("'", "''");
     await _connection!.execute('''
       INSERT INTO ollama_models (model_tag, is_active)
-      VALUES ('$modelTag', TRUE)
+      VALUES ('$safeTag', TRUE)
       ON CONFLICT (model_tag) DO NOTHING;
     ''');
   }
@@ -761,21 +1482,23 @@ class PostgresService {
   Future<void> updateModelPrompt(String modelTag, String prompt) async {
     if (!_isConnected) return;
     final safePrompt = prompt.replaceAll("'", "''");
+    final safeTag = modelTag.replaceAll("'", "''");
     await _connection!.execute('''
-      UPDATE ollama_models SET system_prompt = '$safePrompt' WHERE model_tag = '$modelTag'
+      UPDATE ollama_models SET system_prompt = '$safePrompt' WHERE model_tag = '$safeTag'
     ''');
   }
 
-  Future<void> deleteOllamaModelDb(String modelTag) async {
+  Future<void> deleteAiModelDb(String modelTag) async {
     if (!_isConnected) return;
+    final safeTag = modelTag.replaceAll("'", "''");
     await _connection!.execute(
-      "DELETE FROM ollama_models WHERE model_tag = '$modelTag'",
+      "DELETE FROM ollama_models WHERE model_tag = '$safeTag'",
     );
   }
 
   Future<List<Map<String, dynamic>>> getSavedModels() async {
     if (!_isConnected) return [];
-    await initOllamaTableUpdates();
+    await initAiTableUpdates();
     final result = await _connection!.execute(
       'SELECT model_tag, system_prompt FROM ollama_models',
     );

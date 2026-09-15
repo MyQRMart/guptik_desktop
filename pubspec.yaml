@@ -15,10 +15,12 @@ dependencies:
   qr_flutter: ^4.1.0
   window_manager: ^0.5.1
   device_info_plus: ^12.3.0
-  file_picker: ^10.3.10
+  file_picker: ^5.2.0
   flutter_markdown: ^0.7.0
   process_run: ^0.13.0
+  video_thumbnail: ^0.5.3
   path_provider: ^2.1.5
+  path: ^1.9.1
   postgres: ^3.4.0
   sqflite_common_ffi: ^2.3.2
   supabase_flutter: ^2.3.0
@@ -28,18 +30,33 @@ dependencies:
   web_socket_channel: ^2.4.0
   shared_preferences: ^2.5.4
   uuid: ^4.0.0
-  video_player: ^2.11.0
+  video_player: ^2.11.1
   http: ^1.2.0
   webview_windows: ^0.4.0
   cryptography: ^2.7.0
   flutter_secure_storage: ^9.0.0
+  video_player_win: ^3.2.2
+  media_kit: ^1.2.6
+  media_kit_video: ^2.0.1
+  media_kit_libs_video: ^1.0.7
+  media_kit_libs_windows_video: ^1.0.11 
+  image: ^4.5.0
+  url_launcher: ^6.3.0
 
 dev_dependencies:
   flutter_test:
     sdk: flutter
   flutter_lints: ^6.0.0
+  flutter_launcher_icons: ^0.14.4
 
 flutter:
   uses-material-design: true
   assets:
     - lib/assets/logonobg.png
+
+flutter_launcher_icons:
+  android: true
+  ios: false
+  image_path: "lib/assets/logonobg.png"
+  adaptive_icon_background: "#00000000"
+  adaptive_icon_foreground: "lib/assets/logonobg.png"
