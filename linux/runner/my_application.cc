@@ -53,7 +53,23 @@ static void my_application_activate(GApplication* application) {
     gtk_window_set_title(window, "guptik_desktop");
   }
 
-  gtk_window_set_default_size(window, 1280, 720);
+  gtk_window_set_default_size(window, 1280, 800);
+  gtk_window_set_title(window, "GupTik");
+
+  {
+    g_autoptr(GError) icon_error = nullptr;
+    g_autofree gchar* exe = g_file_read_link("/proc/self/exe", nullptr);
+    if (exe != nullptr) {
+      g_autofree gchar* dir = g_path_get_dirname(exe);
+      g_autofree gchar* icon_path = g_build_filename(
+          dir, "data", "flutter_assets", "lib", "assets", "logonobg.png", nullptr);
+      if (!gtk_window_set_icon_from_file(window, icon_path, &icon_error)) {
+        gtk_window_set_icon_name(window, "guptik_desktop");
+      }
+    } else {
+      gtk_window_set_icon_name(window, "guptik_desktop");
+    }
+  }
 
   g_autoptr(FlDartProject) project = fl_dart_project_new();
   fl_dart_project_set_dart_entrypoint_arguments(project, self->dart_entrypoint_arguments);

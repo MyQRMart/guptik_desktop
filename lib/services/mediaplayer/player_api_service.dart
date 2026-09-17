@@ -4,6 +4,7 @@ import 'package:flutter/foundation.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
 import '../../models/mediaplayer/player_video_model.dart';
 import '../../models/mediaplayer/video_sticker_model.dart';
+import 'live_node_feed.dart';
 
 class PlayerApiService {
   // The specific Cloudflare Tunnel URL or Localhost IP for the creator's node
@@ -19,12 +20,6 @@ class PlayerApiService {
     if (url == null || url.trim().isEmpty) return null;
     String clean = url.trim();
 
-    // Auto-swap old legacy IPs if present
-    if (clean.contains('192.168.1.15')) {
-      clean = clean.replaceAll('192.168.1.15', '192.168.1.186');
-    }
-
-    // Force plain http for all local network addresses to prevent HandshakeExceptions
     if (clean.contains('192.168.') || clean.contains('10.0.') || clean.contains('127.0.0.1') || clean.contains('localhost')) {
       clean = clean.replaceAll('https://', 'http://');
       if (!clean.startsWith('http://')) {
@@ -84,7 +79,7 @@ class PlayerApiService {
       }
 
       // 4. Swap the IDs and build the feed!
-      return allVideos.map((v) {
+      final mapped = allVideos.map((v) {
         if (v['repost_id'] != null) {
           final orig = originalVideosMap[v['repost_id'].toString()];
           
@@ -106,6 +101,7 @@ class PlayerApiService {
         final nodeUrl = v['creator_cloudflare_url'] ?? gatewayUrl ?? 'localhost';
         return PlayerVideo.fromJson(v, nodeUrl);
       }).toList();
+      return LiveNodeFeed.onlyLive(mapped);
       
     } catch (e) {
       debugPrint("Feed fetch error: $e");
@@ -183,6 +179,7 @@ class PlayerApiService {
         body: jsonEncode({
           'video_id': videoId,
           'creator_uid': creatorUid,
+          'channel_id': creatorUid,
           'watch_duration_seconds': duration,
           'percent_completed': percent,
           'session_id': sessionId,
@@ -199,7 +196,12 @@ class PlayerApiService {
       final response = await http.post(
         Uri.parse('$gatewayUrl/player/video/save'),
         headers: {'Content-Type': 'application/json'},
-        body: jsonEncode({'video_id': videoId, 'creator_uid': creatorUid}),
+        body: jsonEncode({
+          'video_id': videoId,
+          'creator_uid': creatorUid,
+          'viewer_uid': Supabase.instance.client.auth.currentUser?.id,
+          'folder_name': 'Watch Later',
+        }),
       );
       return response.statusCode == 200;
     } catch (e) { return false; }

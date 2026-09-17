@@ -142,12 +142,18 @@ class MetaService {
     Future<void> fetchChats(String? accountId, SocialPlatform platform, String urlSuffix) async {
       if (accountId == null) return;
       try {
-        final res = await http.get(Uri.parse('https://graph.facebook.com/$_graphApiVersion/$accountId/conversations?fields=id,updated_time,messages.limit(1){message,from,created_time},unread_count&access_token=$accessToken$urlSuffix'));
+        final res = await http.get(Uri.parse('https://graph.facebook.com/$_graphApiVersion/$accountId/conversations?fields=id,updated_time,participants,messages.limit(1){message,from,created_time},unread_count&access_token=$accessToken$urlSuffix'));
         if (res.statusCode == 200) {
           final data = json.decode(res.body);
           if (data['data'] != null) {
             for (var conv in data['data']) {
               final lastMsg = conv['messages']?['data']?[0];
+              String participantId = '';
+              final parts = conv['participants']?['data'] as List? ?? [];
+              for (final p in parts) {
+                final pid = p['id']?.toString() ?? '';
+                if (pid.isNotEmpty && pid != accountId) participantId = pid;
+              }
               allChats.add(MetaChat(
                 id: conv['id'], platform: platform, avatarUrl: '',
                 senderName: lastMsg?['from']?['username'] ?? lastMsg?['from']?['name'] ?? 'User',
@@ -155,6 +161,7 @@ class MetaService {
                 time: _formatTime(lastMsg?['created_time']),
                 rawTimestamp: lastMsg?['created_time'],
                 isUnread: (conv['unread_count'] ?? 0) > 0,
+                participantId: participantId,
               ));
             }
           }
@@ -185,15 +192,23 @@ class MetaService {
     return [];
   }
 
-  Future<bool> sendMessage(String conversationId, String message) async {
+  Future<bool> sendMessage(String conversationId, String message, {String participantId = ''}) async {
     final creds = await _getCredentials();
     final accessToken = creds['facebook_page_access_token'] ?? creds['facebook_user_access_token'];
-    if (accessToken == null) return false;
+    final pageId = creds['facebook_account_id'];
+    if (accessToken == null || pageId == null) return false;
+    final to = participantId.isNotEmpty ? participantId : conversationId;
 
     try {
       final res = await http.post(
-        Uri.parse('https://graph.facebook.com/$_graphApiVersion/$conversationId/messages'),
-        body: {'recipient': json.encode({'id': conversationId}), 'message': message, 'access_token': accessToken},
+        Uri.parse('https://graph.facebook.com/$_graphApiVersion/$pageId/messages'),
+        headers: {'Content-Type': 'application/json'},
+        body: json.encode({
+          'recipient': {'id': to},
+          'message': {'text': message},
+          'messaging_type': 'RESPONSE',
+          'access_token': accessToken,
+        }),
       );
       return res.statusCode == 200;
     } catch (_) { return false; }

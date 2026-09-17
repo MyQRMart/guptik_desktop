@@ -2,7 +2,10 @@ import 'package:flutter/material.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
 import '../../services/external/docker_service.dart';
-import '../auth/login_signup_screen.dart'; // Ensure this points to your new LoginScreen
+import '../../services/updates/guptik_version.dart';
+import '../../services/updates/update_service.dart';
+import 'package:url_launcher/url_launcher.dart';
+import '../auth/login_signup_screen.dart';
 
 class SettingsScreen extends StatefulWidget {
   const SettingsScreen({super.key});
@@ -13,6 +16,49 @@ class SettingsScreen extends StatefulWidget {
 
 class _SettingsScreenState extends State<SettingsScreen> {
   bool _isKilling = false;
+  bool _updatingNode = false;
+  String? _nodeInstalled;
+  String? _remoteApp;
+  String? _remoteAppUrl;
+  String _vaultHint = '';
+
+  @override
+  void initState() {
+    super.initState();
+    _loadVersions();
+  }
+
+  Future<void> _loadVersions() async {
+    final existing = await DockerService.findExistingStack();
+    final vault = existing?.workingDir;
+    final rel = await UpdateService.instance.latestDesktopRelease();
+    if (!mounted) return;
+    setState(() {
+      _vaultHint = vault ?? '';
+      _nodeInstalled = vault == null ? null : UpdateService.installedNodeVersion(vault);
+      _remoteApp = rel?.tag;
+      _remoteAppUrl = rel?.url;
+    });
+  }
+
+  Future<void> _applyNode() async {
+    setState(() => _updatingNode = true);
+    try {
+      await DockerService().applyNodeUpdate();
+      await _loadVersions();
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text('Node updated. Postgres and vault files kept.')),
+        );
+      }
+    } catch (e) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('Node update failed: $e'), backgroundColor: Colors.red));
+      }
+    } finally {
+      if (mounted) setState(() => _updatingNode = false);
+    }
+  }
 
   Future<void> _activateKillSwitch() async {
     // Confirm before killing
@@ -76,15 +122,71 @@ MaterialPageRoute(builder: (_) => const LoginSignupScreen()),
     }
   }
 
-  @override
-  Widget build(BuildContext context) {
-    return Padding(
-      padding: const EdgeInsets.all(40.0),
+  Widget _updatesCard() {
+    final nodeStale = GuptikVersion.nodeNewerThan(_nodeInstalled);
+    final appStale = _remoteApp != null && GuptikVersion.appNewer(_remoteApp!);
+    return Container(
+      padding: const EdgeInsets.all(12),
+      decoration: BoxDecoration(
+        color: const Color(0xFF252526),
+        borderRadius: BorderRadius.circular(8),
+        border: Border.all(color: const Color(0xFF2B2B2B)),
+      ),
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          const Text("SYSTEM SETTINGS", style: TextStyle(fontSize: 24, fontWeight: FontWeight.bold, letterSpacing: 2)),
-          const SizedBox(height: 40),
+          const Text('Updates', style: TextStyle(fontSize: 13, fontWeight: FontWeight.w600)),
+          const SizedBox(height: 4),
+          Text('Desktop app and node update separately. Node updates do not reinstall the app.',
+              style: TextStyle(color: Colors.white.withValues(alpha: 0.45), fontSize: 11)),
+          ListTile(
+            dense: true,
+            contentPadding: EdgeInsets.zero,
+            leading: const Icon(Icons.desktop_windows, size: 16, color: Color(0xFF00E5FF)),
+            title: Text('Desktop app  ${GuptikVersion.app}', style: const TextStyle(fontSize: 12)),
+            subtitle: Text(
+              appStale ? 'Newer: $_remoteApp' : (_remoteApp == null ? 'This build' : 'Up to date'),
+              style: const TextStyle(fontSize: 11),
+            ),
+            trailing: appStale && _remoteAppUrl != null
+                ? TextButton(
+                    onPressed: () => launchUrl(Uri.parse(_remoteAppUrl!)),
+                    child: const Text('Open', style: TextStyle(fontSize: 12)),
+                  )
+                : null,
+          ),
+          ListTile(
+            dense: true,
+            contentPadding: EdgeInsets.zero,
+            leading: const Icon(Icons.dns, size: 16, color: Color(0xFF00E5FF)),
+            title: Text('Node  ${GuptikVersion.node}', style: const TextStyle(fontSize: 12)),
+            subtitle: Text(
+              'Installed: ${_nodeInstalled ?? "unknown"}${_vaultHint.isEmpty ? "" : "\n$_vaultHint"}',
+              style: const TextStyle(fontSize: 11),
+            ),
+            trailing: TextButton(
+              onPressed: (_updatingNode || !nodeStale) ? null : _applyNode,
+              child: _updatingNode
+                  ? const SizedBox(width: 14, height: 14, child: CircularProgressIndicator(strokeWidth: 2))
+                  : Text(nodeStale ? 'Update node' : 'Current', style: const TextStyle(fontSize: 12)),
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return Padding(
+      padding: const EdgeInsets.all(16.0),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          const Text('Settings', style: TextStyle(fontSize: 16, fontWeight: FontWeight.w600, letterSpacing: 0.4)),
+          const SizedBox(height: 16),
+          _updatesCard(),
+          const SizedBox(height: 16),
 
           // Regular Settings Panel
           Container(

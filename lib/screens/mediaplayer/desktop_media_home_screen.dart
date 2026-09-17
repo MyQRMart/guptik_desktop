@@ -1,12 +1,13 @@
 import 'dart:convert';
 import 'package:flutter/material.dart';
-import 'package:lucide_icons/lucide_icons.dart';
+import 'package:lucide_flutter/lucide_flutter.dart';
 import 'package:supabase_flutter/supabase_flutter.dart'; 
 import 'package:http/http.dart' as http; // 🚀 Added for local history fetching
 import '../../models/mediaplayer/player_video_model.dart';
 import '../../services/mediaplayer/player_api_service.dart';
 import '../../services/mediaplayer/watch_history_local_store.dart';
 import '../../services/external/docker_service.dart';
+import '../../theme/app_chrome.dart';
 import '../../widgets/mediaplayer/player_video_card.dart';
 import 'desktop_upload__screen.dart';
 import 'creator_profile_screen.dart';
@@ -195,6 +196,76 @@ class _DesktopMediaHomeScreenState extends State<DesktopMediaHomeScreen> {
     }).toList();
   }
 
+  bool _inCat(PlayerVideo v, String cat) {
+    final c = cat.toLowerCase();
+    final aliases = {
+      'comedy': ['comedy', 'funny', 'entertainment'],
+      'music': ['music', 'song'],
+    };
+    if (v.category.toLowerCase() == c) return true;
+    if (v.tags.any((t) => t.toLowerCase() == c)) return true;
+    final extra = aliases[c];
+    if (extra == null) return false;
+    return extra.contains(v.category.toLowerCase()) ||
+        v.tags.any((t) => extra.contains(t.toLowerCase()));
+  }
+
+  Widget _ytHeading(String title) {
+    return Padding(
+      padding: const EdgeInsets.only(top: 8, bottom: 12),
+      child: Text(title, style: const TextStyle(color: Colors.white, fontSize: 15, fontWeight: FontWeight.w600)),
+    );
+  }
+
+  Widget _ytGrid(String title, List<PlayerVideo> videos) {
+    if (videos.isEmpty) return const SizedBox.shrink();
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        _ytHeading(title),
+        GridView.builder(
+          shrinkWrap: true,
+          physics: const NeverScrollableScrollPhysics(),
+          gridDelegate: const SliverGridDelegateWithMaxCrossAxisExtent(
+            maxCrossAxisExtent: 420,
+            mainAxisSpacing: 20,
+            crossAxisSpacing: 16,
+            childAspectRatio: 1.28,
+          ),
+          itemCount: videos.length > 8 ? 8 : videos.length,
+          itemBuilder: (context, index) => PlayerVideoCard(
+            video: videos[index],
+            onReturn: _loadFeed,
+          ),
+        ),
+        const SizedBox(height: 16),
+      ],
+    );
+  }
+
+  Widget _ytShorts(String title, List<PlayerVideo> reels) {
+    if (reels.isEmpty) return const SizedBox.shrink();
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        _ytHeading(title),
+        SizedBox(
+          height: 280,
+          child: ListView.separated(
+            scrollDirection: Axis.horizontal,
+            itemCount: reels.length,
+            separatorBuilder: (_, __) => const SizedBox(width: 12),
+            itemBuilder: (context, index) => SizedBox(
+              width: 160,
+              child: PlayerVideoCard(video: reels[index], onReturn: _loadFeed),
+            ),
+          ),
+        ),
+        const SizedBox(height: 16),
+      ],
+    );
+  }
+
   // 🚀 HISTORY DATE HELPERS
   // Returns a human-friendly label for a watch timestamp:
   // Today, Yesterday, weekday name (Mon, Tue...), or a full date for older entries.
@@ -341,34 +412,20 @@ class _DesktopMediaHomeScreenState extends State<DesktopMediaHomeScreen> {
   @override
   Widget build(BuildContext context) {
     return Scaffold(
-      backgroundColor: const Color(0xFF0F172A),
+      backgroundColor: Chrome.editor,
       appBar: AppBar(
-        backgroundColor: const Color(0xFF1E293B),
-        elevation: 0,
         leading: IconButton(
-          icon: const Icon(Icons.menu, color: Color(0xFF00E5FF)),
-          onPressed: () {
-            setState(() {
-              _isSidebarExpanded = !_isSidebarExpanded;
-            });
-          },
+          icon: const Icon(Icons.menu, size: 16),
+          onPressed: () => setState(() => _isSidebarExpanded = !_isSidebarExpanded),
         ),
-        title: const Row(
-          children: [
-            Icon(LucideIcons.youtube, color: Color(0xFF00E5FF)),
-            Text(' Guptik Mediaplayer', style: TextStyle(color: Colors.white)),
-          ],
-        ),
+        title: const Text('Media'),
         actions: [
-          Padding(
-            padding: const EdgeInsets.only(right: 16.0),
-            child: ElevatedButton.icon(
-              onPressed: () => Navigator.push(context, MaterialPageRoute(builder: (_) => const DesktopUploadScreen())),
-              style: ElevatedButton.styleFrom(backgroundColor: const Color(0xFF00E5FF), foregroundColor: Colors.black),
-              icon: const Icon(Icons.upload, size: 18),
-              label: const Text("Upload Video", style: TextStyle(fontWeight: FontWeight.bold)),
-            ),
-          )
+          TextButton.icon(
+            onPressed: () => Navigator.push(context, MaterialPageRoute(builder: (_) => const DesktopUploadScreen())),
+            icon: const Icon(Icons.upload, size: 14, color: Chrome.accent),
+            label: const Text('Upload', style: TextStyle(color: Chrome.accent, fontSize: 12)),
+          ),
+          const SizedBox(width: 8),
         ],
       ),
       body: Row(
@@ -639,14 +696,19 @@ class _DesktopMediaHomeScreenState extends State<DesktopMediaHomeScreen> {
       );
     }
 
-    final activeFeed = _filteredVideos;
-    final int splitIndex = activeFeed.length > 4 ? 4 : activeFeed.length;
-    final List<PlayerVideo> topVideos = activeFeed.sublist(0, splitIndex);
-    final List<PlayerVideo> bottomVideos = activeFeed.sublist(splitIndex);
+    final longs = _filteredVideos;
+    final liked = [...longs.where((v) => v.likeCount > 0)]..sort((a, b) => b.likeCount.compareTo(a.likeCount));
+    final popular = [...longs]..sort((a, b) => b.viewCount.compareTo(a.viewCount));
+    final now = DateTime.now();
+    final trending = longs.where((v) {
+      final t = DateTime.tryParse(v.createdAt);
+      return t != null && now.difference(t).inDays <= 14;
+    }).toList()
+      ..sort((a, b) => b.viewCount.compareTo(a.viewCount));
 
     return SingleChildScrollView(
       physics: const AlwaysScrollableScrollPhysics(), 
-      padding: const EdgeInsets.fromLTRB(32, 16, 32, 32), 
+      padding: const EdgeInsets.fromLTRB(24, 12, 24, 24), 
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
@@ -654,74 +716,24 @@ class _DesktopMediaHomeScreenState extends State<DesktopMediaHomeScreen> {
           // VIEW 1: HOME SCREEN
           if (_selectedIndex == 0) ...[
             buildSearchBarAndFilters(),
-            
-            if (topVideos.isEmpty && _reels.isEmpty)
-              const Text("No videos found matching your search/filter.", style: TextStyle(color: Colors.grey)),
-            
-            if (topVideos.isNotEmpty)
-              GridView.builder(
-                shrinkWrap: true,
-                physics: const NeverScrollableScrollPhysics(), 
-                gridDelegate: const SliverGridDelegateWithMaxCrossAxisExtent(
-                  maxCrossAxisExtent: 520, 
-                  mainAxisSpacing: 48,     
-                  crossAxisSpacing: 24, 
-                  childAspectRatio: 1.28,  
-                ),
-                itemCount: topVideos.length,
-                itemBuilder: (context, index) => PlayerVideoCard(
-                  video: topVideos[index],
-                  onReturn: _loadFeed, 
-                ),
-              ),
-
-            if (_reels.isNotEmpty && _searchQuery.isEmpty && _selectedFilter == 'All') ...[
-              const SizedBox(height: 48),
-              const Divider(color: Colors.white12),
-              const SizedBox(height: 24),
-              
-              const Row(
-                children: [
-                  Icon(Icons.amp_stories, color: Color(0xFF00E5FF)),
-                  SizedBox(width: 8),
-                  Text("Shorts & Reels", style: TextStyle(color: Colors.white, fontSize: 22, fontWeight: FontWeight.bold)),
-                ],
-              ),
-              const SizedBox(height: 24),
-              SizedBox(
-                height: 520, 
-                child: ListView.separated(
-                  scrollDirection: Axis.horizontal,
-                  itemCount: _reels.length,
-                  separatorBuilder: (context, index) => const SizedBox(width: 16),
-                  itemBuilder: (context, index) => PlayerVideoCard(
-                    video: _reels[index],
-                    onReturn: _loadFeed, 
-                  ),
-                ),
-              ),
-              
-              const SizedBox(height: 24),
-              const Divider(color: Colors.white12),
-              const SizedBox(height: 48),
-            ],
-
-            if (bottomVideos.isNotEmpty) ...[
-              GridView.builder(
-                shrinkWrap: true,
-                physics: const NeverScrollableScrollPhysics(), 
-                gridDelegate: const SliverGridDelegateWithMaxCrossAxisExtent(
-                  maxCrossAxisExtent: 520, 
-                  mainAxisSpacing: 48, 
-                  crossAxisSpacing: 24, 
-                  childAspectRatio: 1.28, 
-                ),
-                itemCount: bottomVideos.length,
-                itemBuilder: (context, index) => PlayerVideoCard(
-                  video: bottomVideos[index],
-                  onReturn: _loadFeed,
-                ),
-              ),
+            if (longs.isEmpty && _reels.isEmpty)
+              const Text("No videos from an online node.", style: TextStyle(color: Colors.grey)),
+            if (_selectedFilter != 'All')
+              _ytGrid(_selectedFilter, longs)
+            else ...[
+              _ytGrid('Recommended', longs.take(8).toList()),
+              _ytShorts('Shorts', _reels),
+              _ytGrid('Liked', liked),
+              _ytGrid('Popular', popular.take(8).toList()),
+              _ytGrid('Trending', trending.take(8).toList()),
+              _ytGrid('Music', longs.where((v) => _inCat(v, 'Music')).toList()),
+              _ytGrid('Comedy', longs.where((v) => _inCat(v, 'Comedy')).toList()),
+              _ytGrid('Gaming', longs.where((v) => _inCat(v, 'Gaming')).toList()),
+              _ytGrid('Education', longs.where((v) => _inCat(v, 'Education')).toList()),
+              _ytGrid('Tech', longs.where((v) => _inCat(v, 'Tech')).toList()),
+              _ytGrid('Vlog', longs.where((v) => _inCat(v, 'Vlog')).toList()),
+              _ytGrid('News', longs.where((v) => _inCat(v, 'News')).toList()),
+              _ytGrid('Entertainment', longs.where((v) => _inCat(v, 'Entertainment')).toList()),
             ],
           ],
 

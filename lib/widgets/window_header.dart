@@ -1,14 +1,11 @@
 import 'package:flutter/material.dart';
-import 'package:lucide_icons/lucide_icons.dart';
+import 'package:lucide_flutter/lucide_flutter.dart';
 import 'package:window_manager/window_manager.dart';
+import '../theme/app_chrome.dart';
 
 class WindowHeader extends StatefulWidget {
   final String title;
-
-  const WindowHeader({
-    required this.title,
-    super.key,
-  });
+  const WindowHeader({this.title = 'GupTik', super.key});
 
   @override
   State<WindowHeader> createState() => _WindowHeaderState();
@@ -21,6 +18,9 @@ class _WindowHeaderState extends State<WindowHeader> with WindowListener {
   void initState() {
     super.initState();
     windowManager.addListener(this);
+    windowManager.isMaximized().then((v) {
+      if (mounted) setState(() => _isMaximized = v);
+    });
   }
 
   @override
@@ -30,137 +30,91 @@ class _WindowHeaderState extends State<WindowHeader> with WindowListener {
   }
 
   @override
-  void onWindowMaximize() {
-    setState(() => _isMaximized = true);
-  }
+  void onWindowMaximize() => setState(() => _isMaximized = true);
 
   @override
-  void onWindowUnmaximize() {
-    setState(() => _isMaximized = false);
-  }
+  void onWindowUnmaximize() => setState(() => _isMaximized = false);
 
   @override
   Widget build(BuildContext context) {
     return Container(
-      height: 48,
-      decoration: BoxDecoration(
-        color: const Color(0xFF0F172A),
-        border: Border(bottom: BorderSide(color: Colors.white.withOpacity(0.05))),
-      ),
+      height: Chrome.titleBarH,
+      color: Chrome.titleBar,
       child: Row(
         children: [
+          const SizedBox(width: 8),
+          Image.asset(
+            'lib/assets/logonobg.png',
+            width: 16,
+            height: 16,
+            errorBuilder: (_, _, _) => Container(
+              width: 16,
+              height: 16,
+              decoration: BoxDecoration(color: Chrome.accent, borderRadius: BorderRadius.circular(2)),
+            ),
+          ),
+          const SizedBox(width: 8),
           Expanded(
             child: GestureDetector(
-              onPanStart: (details) {
-                windowManager.startDragging();
+              behavior: HitTestBehavior.opaque,
+              onPanStart: (_) => windowManager.startDragging(),
+              onDoubleTap: () async {
+                if (await windowManager.isMaximized()) {
+                  windowManager.unmaximize();
+                } else {
+                  windowManager.maximize();
+                }
               },
-              child: Padding(
-                padding: const EdgeInsets.symmetric(horizontal: 16),
-                child: Row(
-                  children: [
-                    Image.asset(
-                      'lib/assets/logonobg.png',
-                      width: 22,
-                      height: 22,
-                      errorBuilder: (_, _, _) => Container(
-                        width: 22,
-                        height: 22,
-                        decoration: BoxDecoration(
-                          color: Colors.cyanAccent,
-                          borderRadius: BorderRadius.circular(4),
-                        ),
-                      ),
-                    ),
-                    const SizedBox(width: 8),
-                    Text(
-                      widget.title,
-                      style: const TextStyle(
-                        fontSize: 12,
-                        fontWeight: FontWeight.w600,
-                        color: Colors.white,
-                        letterSpacing: 0.5,
-                      ),
-                    ),
-                  ],
+              child: Align(
+                alignment: Alignment.centerLeft,
+                child: Text(
+                  widget.title,
+                  style: const TextStyle(fontSize: 12, color: Chrome.fg, fontWeight: FontWeight.w500),
                 ),
               ),
             ),
           ),
-          // Window Controls
-          Row(
-            children: [
-              _WindowButton(
-                icon: LucideIcons.minus,
-                onPressed: () => windowManager.minimize(),
-                tooltip: 'Minimize',
-              ),
-              _WindowButton(
-                icon: _isMaximized ? LucideIcons.copy : LucideIcons.maximize2,
-                onPressed: () => _isMaximized
-                    ? windowManager.unmaximize()
-                    : windowManager.maximize(),
-                tooltip: _isMaximized ? 'Restore' : 'Maximize',
-              ),
-              _WindowButton(
-                icon: LucideIcons.x,
-                onPressed: () => windowManager.close(),
-                tooltip: 'Close',
-                isClose: true,
-              ),
-            ],
+          _WinBtn(icon: LucideIcons.minus, onPressed: () => windowManager.minimize(), tooltip: 'Minimize'),
+          _WinBtn(
+            icon: _isMaximized ? LucideIcons.copy : LucideIcons.square,
+            onPressed: () => _isMaximized ? windowManager.unmaximize() : windowManager.maximize(),
+            tooltip: _isMaximized ? 'Restore' : 'Maximize',
           ),
+          _WinBtn(icon: LucideIcons.x, onPressed: () => windowManager.close(), tooltip: 'Close', isClose: true),
         ],
       ),
     );
   }
 }
 
-class _WindowButton extends StatefulWidget {
+class _WinBtn extends StatefulWidget {
   final IconData icon;
   final VoidCallback onPressed;
   final String tooltip;
   final bool isClose;
-
-  const _WindowButton({
-    required this.icon,
-    required this.onPressed,
-    required this.tooltip,
-    this.isClose = false,
-  });
+  const _WinBtn({required this.icon, required this.onPressed, required this.tooltip, this.isClose = false});
 
   @override
-  State<_WindowButton> createState() => _WindowButtonState();
+  State<_WinBtn> createState() => _WinBtnState();
 }
 
-class _WindowButtonState extends State<_WindowButton> {
-  bool _isHovered = false;
+class _WinBtnState extends State<_WinBtn> {
+  bool _hover = false;
 
   @override
   Widget build(BuildContext context) {
     return MouseRegion(
-      onEnter: (_) => setState(() => _isHovered = true),
-      onExit: (_) => setState(() => _isHovered = false),
-      child: Tooltip(
-        message: widget.tooltip,
-        child: GestureDetector(
-          onTap: widget.onPressed,
+      onEnter: (_) => setState(() => _hover = true),
+      onExit: (_) => setState(() => _hover = false),
+      child: GestureDetector(
+        onTap: widget.onPressed,
+        child: Tooltip(
+          message: widget.tooltip,
           child: Container(
-            width: 48,
-            height: 48,
-            color: _isHovered
-                ? (widget.isClose
-                    ? Colors.red.shade700
-                    : Colors.white.withOpacity(0.1))
-                : Colors.transparent,
-            child: Center(
-              child: Icon(
-                widget.icon,
-                size: 16,
-                color: _isHovered
-                    ? (widget.isClose ? Colors.white : Colors.cyanAccent)
-                    : Colors.grey,
-              ),
-            ),
+            width: 46,
+            height: Chrome.titleBarH,
+            color: _hover ? (widget.isClose ? Chrome.closeHover : Colors.white.withValues(alpha: 0.08)) : Colors.transparent,
+            child: Icon(widget.icon, size: 12, color: _hover && widget.isClose ? Colors.white : Chrome.fg),
           ),
         ),
       ),

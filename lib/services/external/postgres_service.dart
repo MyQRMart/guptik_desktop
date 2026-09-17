@@ -427,10 +427,6 @@ class PostgresService {
 
   /// THE MASTER ARCHITECT: Creates all necessary tables for the entire system
   Future<void> setupDefaultDatabase(Connection conn) async {
-    try {
-      await conn.execute('GRANT ALL ON SCHEMA public TO public');
-    } catch (_) {}
-
     // -------------------------------------------------------------------------
     // PART A: VAULT SYSTEM SCHEMA
     // -------------------------------------------------------------------------
@@ -957,6 +953,32 @@ class PostgresService {
       print("✅ DB Check: mp_videos.repost_id column is ready.");
     } catch (_) {}
 
+    try {
+      await conn.execute(
+        'ALTER TABLE mp_videos ADD COLUMN IF NOT EXISTS video_id TEXT;',
+      );
+      await conn.execute(
+        'ALTER TABLE mp_videos ADD COLUMN IF NOT EXISTS creator_uid TEXT;',
+      );
+      await conn.execute(
+        'UPDATE mp_videos SET video_id = id::text WHERE video_id IS NULL;',
+      );
+      await conn.execute(
+        'CREATE UNIQUE INDEX IF NOT EXISTS idx_mp_videos_video_id ON mp_videos(video_id);',
+      );
+      print("✅ DB Check: mp_videos.video_id / creator_uid ready.");
+    } catch (_) {}
+
+    try {
+      await conn.execute(
+        'ALTER TABLE mp_saved_videos ADD COLUMN IF NOT EXISTS viewer_uid TEXT;',
+      );
+      await conn.execute(
+        'CREATE UNIQUE INDEX IF NOT EXISTS idx_mp_saved_viewer ON mp_saved_videos(video_id, viewer_uid) WHERE viewer_uid IS NOT NULL;',
+      );
+      print("✅ DB Check: mp_saved_videos.viewer_uid ready.");
+    } catch (_) {}
+
     // -------------------------------------------------------------
     // 🚀 WATCHER INTEREST: per-watcher interested / not_interested feedback.
     // -------------------------------------------------------------
@@ -1289,6 +1311,59 @@ class PostgresService {
     ''');
 
     await conn.execute('''
+      CREATE TABLE IF NOT EXISTS mp_channel_ad_settings (
+        channel_id TEXT PRIMARY KEY,
+        pre_roll_enabled BOOLEAN DEFAULT FALSE,
+        mid_roll_enabled BOOLEAN DEFAULT FALSE,
+        post_roll_enabled BOOLEAN DEFAULT FALSE,
+        ad_frequency_minutes INTEGER DEFAULT 10,
+        skip_after_seconds INTEGER DEFAULT 5,
+        min_subscribers_for_ads INTEGER DEFAULT 100,
+        created_at TIMESTAMPTZ DEFAULT NOW(),
+        updated_at TIMESTAMPTZ DEFAULT NOW()
+      )
+    ''');
+
+    await conn.execute('''
+      CREATE TABLE IF NOT EXISTS mp_channel_membership_tiers (
+        id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+        channel_id TEXT NOT NULL,
+        name TEXT NOT NULL,
+        price DECIMAL DEFAULT 0,
+        currency TEXT DEFAULT 'USD',
+        perks TEXT DEFAULT '',
+        is_active BOOLEAN DEFAULT TRUE,
+        created_at TIMESTAMPTZ DEFAULT NOW()
+      )
+    ''');
+
+    await conn.execute('''
+      CREATE TABLE IF NOT EXISTS mp_player_notifications (
+        id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+        recipient_uid TEXT NOT NULL,
+        actor_uid TEXT NOT NULL,
+        actor_name TEXT DEFAULT '',
+        notification_type TEXT NOT NULL,
+        video_id TEXT,
+        video_title TEXT,
+        comment_text TEXT,
+        badge_type TEXT,
+        is_read BOOLEAN DEFAULT FALSE,
+        created_at TIMESTAMPTZ DEFAULT NOW()
+      )
+    ''');
+
+    await conn.execute('''
+      CREATE TABLE IF NOT EXISTS mp_creator_badges (
+        id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+        channel_id TEXT NOT NULL,
+        badge_type TEXT NOT NULL,
+        awarded_at TIMESTAMPTZ DEFAULT NOW(),
+        UNIQUE(channel_id, badge_type)
+      )
+    ''');
+
+    await conn.execute('''
       CREATE TABLE IF NOT EXISTS tm_call_log (
         id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
         call_id TEXT NOT NULL UNIQUE,
@@ -1312,23 +1387,284 @@ class PostgresService {
       )
     ''');
 
+    await conn.execute('''
+      CREATE TABLE IF NOT EXISTS gt_contacts (
+        id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+        device_id TEXT NOT NULL UNIQUE,
+        display_name TEXT NOT NULL,
+        given_name TEXT DEFAULT '',
+        family_name TEXT DEFAULT '',
+        organization TEXT DEFAULT '',
+        job_title TEXT DEFAULT '',
+        notes TEXT DEFAULT '',
+        is_starred BOOLEAN DEFAULT FALSE,
+        synced_at TIMESTAMPTZ DEFAULT NOW()
+      )
+    ''');
+    await conn.execute('''
+      CREATE TABLE IF NOT EXISTS gt_contact_phones (
+        id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+        contact_id UUID NOT NULL REFERENCES gt_contacts(id) ON DELETE CASCADE,
+        number TEXT NOT NULL,
+        label TEXT DEFAULT ''
+      )
+    ''');
+    await conn.execute('''
+      CREATE TABLE IF NOT EXISTS gt_contact_emails (
+        id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+        contact_id UUID NOT NULL REFERENCES gt_contacts(id) ON DELETE CASCADE,
+        email TEXT NOT NULL,
+        label TEXT DEFAULT ''
+      )
+    ''');
+    await conn.execute('''
+      CREATE TABLE IF NOT EXISTS gt_contact_addresses (
+        id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+        contact_id UUID NOT NULL REFERENCES gt_contacts(id) ON DELETE CASCADE,
+        formatted TEXT DEFAULT '',
+        street TEXT DEFAULT '',
+        city TEXT DEFAULT '',
+        region TEXT DEFAULT '',
+        postcode TEXT DEFAULT '',
+        country TEXT DEFAULT '',
+        label TEXT DEFAULT ''
+      )
+    ''');
+    await conn.execute('''
+      CREATE TABLE IF NOT EXISTS gt_contact_groups (
+        id TEXT PRIMARY KEY,
+        name TEXT NOT NULL,
+        synced_at TIMESTAMPTZ DEFAULT NOW()
+      )
+    ''');
+    await conn.execute('''
+      CREATE TABLE IF NOT EXISTS gt_contact_group_members (
+        group_id TEXT NOT NULL REFERENCES gt_contact_groups(id) ON DELETE CASCADE,
+        contact_id UUID NOT NULL REFERENCES gt_contacts(id) ON DELETE CASCADE,
+        PRIMARY KEY (group_id, contact_id)
+      )
+    ''');
+
+    await conn.execute('''
+      CREATE TABLE IF NOT EXISTS fb_conversations (
+        id TEXT PRIMARY KEY,
+        user_id TEXT NOT NULL,
+        sender_id TEXT DEFAULT '',
+        sender_username TEXT DEFAULT '',
+        sender_avatar TEXT,
+        last_message TEXT,
+        last_message_time TIMESTAMPTZ,
+        unread_count INT DEFAULT 0,
+        updated_at TIMESTAMPTZ DEFAULT NOW()
+      )
+    ''');
+    await conn.execute('''
+      CREATE TABLE IF NOT EXISTS ig_conversations (
+        id TEXT PRIMARY KEY,
+        user_id TEXT NOT NULL,
+        sender_id TEXT DEFAULT '',
+        last_message TEXT,
+        last_message_time TIMESTAMPTZ,
+        is_unread BOOLEAN DEFAULT TRUE,
+        updated_at TIMESTAMPTZ DEFAULT NOW()
+      )
+    ''');
+    await conn.execute('''
+      CREATE TABLE IF NOT EXISTS fb_messages (
+        id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+        conversation_id TEXT NOT NULL,
+        message_id TEXT UNIQUE,
+        content TEXT DEFAULT '',
+        message_type TEXT DEFAULT 'text',
+        direction TEXT DEFAULT '',
+        status TEXT,
+        timestamp TIMESTAMPTZ,
+        status_timestamp TIMESTAMPTZ,
+        media_info JSONB,
+        raw_data JSONB,
+        created_at TIMESTAMPTZ DEFAULT NOW(),
+        updated_at TIMESTAMPTZ DEFAULT NOW()
+      )
+    ''');
+    await conn.execute('''
+      CREATE TABLE IF NOT EXISTS ig_messages (
+        id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+        conversation_id TEXT NOT NULL,
+        message_id TEXT UNIQUE,
+        content TEXT DEFAULT '',
+        message_type TEXT DEFAULT 'text',
+        direction TEXT DEFAULT '',
+        status TEXT,
+        timestamp TIMESTAMPTZ,
+        status_timestamp TIMESTAMPTZ,
+        media_info JSONB,
+        raw_data JSONB,
+        created_at TIMESTAMPTZ DEFAULT NOW(),
+        updated_at TIMESTAMPTZ DEFAULT NOW()
+      )
+    ''');
+    await conn.execute('''
+      CREATE TABLE IF NOT EXISTS wa_conversations (
+        id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+        user_id TEXT NOT NULL,
+        ai_agent_id TEXT,
+        phone_number TEXT DEFAULT '',
+        contact_name TEXT,
+        contact_email TEXT,
+        contact_notes TEXT,
+        last_message TEXT,
+        last_message_time TIMESTAMPTZ,
+        is_unread BOOLEAN DEFAULT TRUE,
+        is_archived BOOLEAN DEFAULT FALSE,
+        status TEXT DEFAULT 'active',
+        created_at TIMESTAMPTZ DEFAULT NOW(),
+        updated_at TIMESTAMPTZ DEFAULT NOW()
+      )
+    ''');
+    await conn.execute('''
+      CREATE TABLE IF NOT EXISTS wa_messages (
+        id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+        conversation_id TEXT NOT NULL,
+        message_id TEXT UNIQUE,
+        content TEXT DEFAULT '',
+        message_type TEXT DEFAULT 'text',
+        direction TEXT DEFAULT '',
+        status TEXT,
+        timestamp TIMESTAMPTZ,
+        status_timestamp TIMESTAMPTZ,
+        template_id TEXT,
+        media_info JSONB,
+        raw_data JSONB,
+        created_at TIMESTAMPTZ DEFAULT NOW(),
+        updated_at TIMESTAMPTZ DEFAULT NOW()
+      )
+    ''');
+    await conn.execute('''
+      CREATE TABLE IF NOT EXISTS whatsapp_templates (
+        id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+        user_id TEXT,
+        name TEXT NOT NULL,
+        category TEXT DEFAULT '',
+        language TEXT DEFAULT '',
+        body TEXT DEFAULT '',
+        footer TEXT,
+        variables JSONB,
+        buttons JSONB,
+        status TEXT DEFAULT 'draft',
+        header_media_url TEXT,
+        header_text TEXT,
+        sample_content JSONB,
+        meta_business_account_id TEXT,
+        whatsapp_phone_number_id TEXT,
+        whatsapp_numeric_id TEXT,
+        header_media_id TEXT,
+        header_media_type TEXT,
+        created_at TIMESTAMPTZ DEFAULT NOW(),
+        updated_at TIMESTAMPTZ
+      )
+    ''');
+    await conn.execute('''
+      CREATE TABLE IF NOT EXISTS wa_template_groups (
+        id SERIAL PRIMARY KEY,
+        user_id TEXT,
+        group_name TEXT NOT NULL,
+        group_contacts JSONB DEFAULT '[]'::jsonb
+      )
+    ''');
+    await conn.execute('''
+      CREATE TABLE IF NOT EXISTS internal_templates (
+        id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+        user_id TEXT,
+        name TEXT NOT NULL,
+        subject TEXT,
+        body TEXT DEFAULT '',
+        variables JSONB,
+        created_at TIMESTAMPTZ DEFAULT NOW(),
+        updated_at TIMESTAMPTZ
+      )
+    ''');
+    await conn.execute('CREATE INDEX IF NOT EXISTS idx_fb_msg_conv ON fb_messages(conversation_id)');
+    await conn.execute('CREATE INDEX IF NOT EXISTS idx_ig_msg_conv ON ig_messages(conversation_id)');
+    await conn.execute('CREATE INDEX IF NOT EXISTS idx_wa_msg_conv ON wa_messages(conversation_id)');
+    await conn.execute('CREATE INDEX IF NOT EXISTS idx_wa_conv_user ON wa_conversations(user_id)');
+    try {
+      await conn.execute('CREATE OR REPLACE VIEW conversations AS SELECT * FROM wa_conversations');
+    } catch (_) {}
+
+    await conn.execute('''
+      CREATE TABLE IF NOT EXISTS fb_auto_comment_posts (
+        post_id TEXT PRIMARY KEY,
+        user_id TEXT,
+        auto_reply JSONB,
+        comment_respond TEXT,
+        ai_agent_prompt TEXT,
+        comment_ai_response BOOLEAN DEFAULT FALSE,
+        all_comments BOOLEAN DEFAULT FALSE,
+        ai_agent_id TEXT,
+        updated_at TIMESTAMPTZ DEFAULT NOW()
+      )
+    ''');
+    await conn.execute('''
+      CREATE TABLE IF NOT EXISTS ig_auto_comment_posts (
+        post_id TEXT PRIMARY KEY,
+        user_id TEXT,
+        auto_reply JSONB,
+        comment_respond TEXT,
+        ai_agent_prompt TEXT,
+        comment_ai_response BOOLEAN DEFAULT FALSE,
+        all_comments BOOLEAN DEFAULT FALSE,
+        ai_agent_id TEXT,
+        updated_at TIMESTAMPTZ DEFAULT NOW()
+      )
+    ''');
+    await conn.execute('''
+      CREATE TABLE IF NOT EXISTS fb_comments_responces (
+        id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+        post_id TEXT,
+        sender_name TEXT,
+        context TEXT,
+        direction TEXT,
+        created_at TIMESTAMPTZ DEFAULT NOW()
+      )
+    ''');
+    await conn.execute('''
+      CREATE TABLE IF NOT EXISTS ig_comments_responces (
+        id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+        post_id TEXT,
+        sender_name TEXT,
+        context TEXT,
+        direction TEXT,
+        created_at TIMESTAMPTZ DEFAULT NOW()
+      )
+    ''');
+
     // Reaction Trigger (Creator Side Aggregation)
     await conn.execute('''
       CREATE OR REPLACE FUNCTION update_reaction_counts()
       RETURNS TRIGGER AS \$\$
+      DECLARE
+        vid TEXT;
       BEGIN
-          UPDATE mp_videos SET
-              reaction_heart_count = (SELECT COUNT(*) FROM mp_liked_videos WHERE video_id = NEW.video_id AND reaction_type = 'heart'),
-              reaction_fire_count = (SELECT COUNT(*) FROM mp_liked_videos WHERE video_id = NEW.video_id AND reaction_type = 'fire'),
-              reaction_thumbs_up_count = (SELECT COUNT(*) FROM mp_liked_videos WHERE video_id = NEW.video_id AND reaction_type = 'thumbs_up'),
-              reaction_clap_count = (SELECT COUNT(*) FROM mp_liked_videos WHERE video_id = NEW.video_id AND reaction_type = 'clap'),
-              reaction_laugh_count = (SELECT COUNT(*) FROM mp_liked_videos WHERE video_id = NEW.video_id AND reaction_type = 'laugh'),
-              reaction_surprised_count = (SELECT COUNT(*) FROM mp_liked_videos WHERE video_id = NEW.video_id AND reaction_type = 'surprised'),
-              reaction_sad_count = (SELECT COUNT(*) FROM mp_liked_videos WHERE video_id = NEW.video_id AND reaction_type = 'sad')
-          WHERE id = NEW.video_id::UUID;
-          RETURN NEW;
+        vid := COALESCE(NEW.video_id, OLD.video_id);
+        UPDATE mp_videos SET
+            reaction_heart_count = (SELECT COUNT(*) FROM mp_liked_videos WHERE video_id = vid AND reaction_type = 'heart'),
+            reaction_fire_count = (SELECT COUNT(*) FROM mp_liked_videos WHERE video_id = vid AND reaction_type = 'fire'),
+            reaction_thumbs_up_count = (SELECT COUNT(*) FROM mp_liked_videos WHERE video_id = vid AND reaction_type = 'thumbs_up'),
+            reaction_clap_count = (SELECT COUNT(*) FROM mp_liked_videos WHERE video_id = vid AND reaction_type = 'clap'),
+            reaction_laugh_count = (SELECT COUNT(*) FROM mp_liked_videos WHERE video_id = vid AND reaction_type = 'laugh'),
+            reaction_surprised_count = (SELECT COUNT(*) FROM mp_liked_videos WHERE video_id = vid AND reaction_type = 'surprised'),
+            reaction_sad_count = (SELECT COUNT(*) FROM mp_liked_videos WHERE video_id = vid AND reaction_type = 'sad')
+        WHERE id::text = vid OR video_id = vid;
+        IF TG_OP = 'DELETE' THEN RETURN OLD; END IF;
+        RETURN NEW;
       END;
       \$\$ LANGUAGE plpgsql
+    ''');
+    await conn.execute('DROP TRIGGER IF EXISTS mp_liked_videos_reaction_counts ON mp_liked_videos');
+    await conn.execute('''
+      CREATE TRIGGER mp_liked_videos_reaction_counts
+        AFTER INSERT OR UPDATE OR DELETE ON mp_liked_videos
+        FOR EACH ROW EXECUTE FUNCTION update_reaction_counts()
     ''');
   }
 
@@ -1656,6 +1992,111 @@ class PostgresService {
     } catch (e) {
       print("Error executing query: $e");
       rethrow;
+    }
+  }
+
+  Future<List<Map<String, dynamic>>> getPhoneContacts() async {
+    if (!_isConnected || _connection == null) return [];
+    try {
+      final people = await _connection!.execute(
+        'SELECT id, device_id, display_name, given_name, family_name, organization, job_title, notes, is_starred, synced_at FROM gt_contacts ORDER BY display_name',
+      );
+      final phones = await _connection!.execute('SELECT contact_id, number, label FROM gt_contact_phones');
+      final emails = await _connection!.execute('SELECT contact_id, email, label FROM gt_contact_emails');
+      final addresses = await _connection!.execute(
+        'SELECT contact_id, formatted, street, city, region, postcode, country, label FROM gt_contact_addresses',
+      );
+      final members = await _connection!.execute('SELECT contact_id, group_id FROM gt_contact_group_members');
+      final groups = await _connection!.execute('SELECT id, name FROM gt_contact_groups');
+
+      final phonesBy = <String, List<Map<String, String>>>{};
+      for (final r in phones) {
+        final id = r[0]?.toString() ?? '';
+        phonesBy.putIfAbsent(id, () => []).add({
+          'number': r[1]?.toString() ?? '',
+          'label': r[2]?.toString() ?? '',
+        });
+      }
+      final emailsBy = <String, List<Map<String, String>>>{};
+      for (final r in emails) {
+        final id = r[0]?.toString() ?? '';
+        emailsBy.putIfAbsent(id, () => []).add({
+          'address': r[1]?.toString() ?? '',
+          'label': r[2]?.toString() ?? '',
+        });
+      }
+      final addrBy = <String, List<Map<String, String>>>{};
+      for (final r in addresses) {
+        final id = r[0]?.toString() ?? '';
+        addrBy.putIfAbsent(id, () => []).add({
+          'formatted': r[1]?.toString() ?? '',
+          'street': r[2]?.toString() ?? '',
+          'city': r[3]?.toString() ?? '',
+          'region': r[4]?.toString() ?? '',
+          'postcode': r[5]?.toString() ?? '',
+          'country': r[6]?.toString() ?? '',
+          'label': r[7]?.toString() ?? '',
+        });
+      }
+      final groupName = <String, String>{};
+      for (final r in groups) {
+        groupName[r[0]?.toString() ?? ''] = r[1]?.toString() ?? '';
+      }
+      final groupsBy = <String, List<String>>{};
+      for (final r in members) {
+        final cid = r[0]?.toString() ?? '';
+        final gid = r[1]?.toString() ?? '';
+        final n = groupName[gid];
+        if (n != null && n.isNotEmpty) {
+          groupsBy.putIfAbsent(cid, () => []).add(n);
+        }
+      }
+
+      return people.map((r) {
+        final id = r[0]?.toString() ?? '';
+        return {
+          'id': id,
+          'device_id': r[1]?.toString() ?? '',
+          'display_name': r[2]?.toString() ?? '',
+          'given_name': r[3]?.toString() ?? '',
+          'family_name': r[4]?.toString() ?? '',
+          'organization': r[5]?.toString() ?? '',
+          'job_title': r[6]?.toString() ?? '',
+          'notes': r[7]?.toString() ?? '',
+          'is_starred': r[8] == true,
+          'synced_at': r[9]?.toString() ?? '',
+          'phones': phonesBy[id] ?? const [],
+          'emails': emailsBy[id] ?? const [],
+          'addresses': addrBy[id] ?? const [],
+          'groups': groupsBy[id] ?? const [],
+        };
+      }).toList();
+    } catch (e) {
+      print('getPhoneContacts: $e');
+      return [];
+    }
+  }
+
+  Future<List<Map<String, dynamic>>> getContactGroups() async {
+    if (!_isConnected || _connection == null) return [];
+    try {
+      final result = await _connection!.execute('''
+        SELECT g.id, g.name, COUNT(m.contact_id)::int
+        FROM gt_contact_groups g
+        LEFT JOIN gt_contact_group_members m ON m.group_id = g.id
+        GROUP BY g.id, g.name
+        ORDER BY g.name
+      ''');
+      return result
+          .map((r) => {
+                'id': r[0]?.toString() ?? '',
+                'name': r[1]?.toString() ?? '',
+                'contact_count': (r[2] as num?)?.toInt() ?? 0,
+              })
+          .toList();
+    } catch (e) {
+      print('getContactGroups: $e');
+      return [];
     }
   }
 }

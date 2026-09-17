@@ -1,38 +1,28 @@
 import 'package:flutter/material.dart';
-import 'package:guptik_desktop/models/whatsapp/wa_conversation.dart'; // Ensure this matches your package name
-import 'package:supabase_flutter/supabase_flutter.dart';
+import 'package:guptik_desktop/models/whatsapp/wa_conversation.dart';
+import 'package:guptik_desktop/services/node/node_table_client.dart';
 import 'package:shared_preferences/shared_preferences.dart';
+import 'package:supabase_flutter/supabase_flutter.dart';
 
 class ConversationService {
   final SupabaseClient _client = Supabase.instance.client;
-  String? get _userId => _client.auth.currentUser?.id;
+  final _store = NodeTableClient();
 
-  // Helper: Get the correct User ID (Auth or Device-Linked)
   Future<String?> _getEffectiveUserId() async {
-    // 1. Check if explicitly logged in via Supabase Auth
     if (_client.auth.currentUser?.id != null) {
       return _client.auth.currentUser!.id;
     }
-
-    // 2. Fallback: Resolve via Device ID
     try {
       final prefs = await SharedPreferences.getInstance();
-      // Check both keys just in case
-      final deviceId =
-          prefs.getString('device_id') ?? prefs.getString('desktop_device_id');
-
+      final deviceId = prefs.getString('device_id') ?? prefs.getString('desktop_device_id');
       if (deviceId != null) {
-        debugPrint('Resolving User ID for Device: $deviceId');
         final response = await _client
             .from('desktop_devices')
             .select('user_id')
             .eq('device_id', deviceId)
             .maybeSingle();
-
         if (response != null && response['user_id'] != null) {
-          final userId = response['user_id'] as String;
-          debugPrint('Resolved User ID: $userId');
-          return userId;
+          return response['user_id'] as String;
         }
       }
     } catch (e) {
@@ -41,98 +31,51 @@ class ConversationService {
     return null;
   }
 
-  // Helper to get current UTC timestamp in ISO format
-  String _getUtcTimestamp() {
-    return DateTime.now().toUtc().toIso8601String();
-  }
+  String _getUtcTimestamp() => DateTime.now().toUtc().toIso8601String();
 
   Future<List<Conversation>> getConversations() async {
-    try {
-      debugPrint('Fetching all conversations...');
-
-      final userId = await _getEffectiveUserId();
-      if (userId == null) {
-        debugPrint('Aborting: No User ID linked to this device.');
-        return [];
-      }
-
-      final data = await _client
-          .from('wa_conversations')
-          .select()
-          .eq('user_id', _userId!) // Filter by the resolved User ID
-          .order('last_message_time', ascending: false);
-
-      debugPrint('Fetched ${data.length} conversations');
-      return (data as List).map((item) {
-        try {
-          return Conversation.fromMap(item);
-        } catch (e) {
-          debugPrint('Error parsing conversation item: $e');
-          // debugPrint('Stack: $stack');
-          rethrow;
-        }
-      }).toList();
-    } catch (e) {
-      debugPrint('Error in getConversations: $e');
-      // Return empty list instead of throwing to prevent UI crash
-      return [];
-    }
+    final userId = await _getEffectiveUserId();
+    if (userId == null) return [];
+    final data = await _store.select(
+      'wa_conversations',
+      eq: {'user_id': userId},
+      order: 'last_message_time',
+      ascending: false,
+    );
+    return data.map(Conversation.fromMap).toList();
   }
 
   Future<List<Conversation>> getIndividualConversations() async {
-    try {
-      debugPrint('Fetching individual conversations...');
-
-      final userId = await _getEffectiveUserId();
-      if (userId == null) return [];
-
-      final data = await _client
-          .from('wa_conversations')
-          .select()
-          .eq('user_id', userId) // Filter by User ID
-          .eq('is_archived', false)
-          .order('last_message_time', ascending: false);
-
-      debugPrint('Fetched ${data.length} individual conversations');
-      return (data as List).map((item) => Conversation.fromMap(item)).toList();
-    } catch (e) {
-      debugPrint('Error in getIndividualConversations: $e');
-      return [];
-    }
+    final userId = await _getEffectiveUserId();
+    if (userId == null) return [];
+    final data = await _store.select(
+      'wa_conversations',
+      eq: {'user_id': userId, 'is_archived': 'false'},
+      order: 'last_message_time',
+      ascending: false,
+    );
+    return data.map(Conversation.fromMap).toList();
   }
 
   Future<List<Conversation>> getGroupConversations() async {
-    try {
-      debugPrint('Fetching group conversations...');
-
-      final userId = await _getEffectiveUserId();
-      if (userId == null) return [];
-
-      final data = await _client
-          .from('conversations')
-          .select()
-          .eq('user_id', userId) // Filter by User ID
-          .eq('is_archived', false)
-          .filter('ai_agent_id', 'not.is', null)
-          .order('last_message_time', ascending: false);
-
-      debugPrint('Fetched ${data.length} group conversations');
-      return (data as List).map((item) => Conversation.fromMap(item)).toList();
-    } catch (e) {
-      debugPrint('Error in getGroupConversations: $e');
-      return [];
-    }
+    final userId = await _getEffectiveUserId();
+    if (userId == null) return [];
+    final data = await _store.select(
+      'conversations',
+      eq: {'user_id': userId, 'is_archived': 'false'},
+      notNull: 'ai_agent_id',
+      order: 'last_message_time',
+      ascending: false,
+    );
+    return data.map(Conversation.fromMap).toList();
   }
 
   Future<void> markAsRead(String conversationId) async {
-    try {
-      await _client
-          .from('wa_conversations')
-          .update({'is_unread': false, 'updated_at': _getUtcTimestamp()})
-          .eq('id', conversationId);
-    } catch (e) {
-      debugPrint('Error marking as read: $e');
-    }
+    await _store.update(
+      'wa_conversations',
+      eq: {'id': conversationId},
+      set: {'is_unread': false, 'updated_at': _getUtcTimestamp()},
+    );
   }
 
   Future<void> updateLastMessage({
@@ -140,23 +83,17 @@ class ConversationService {
     required String message,
     bool fromUser = true,
   }) async {
-    try {
-      final currentTime = DateTime.now();
-      final utcTime = currentTime.toUtc().toIso8601String();
-      final localTimeForText = currentTime.toIso8601String();
-
-      await _client
-          .from('wa_conversations')
-          .update({
-            'last_message': message,
-            'last_message_time': localTimeForText,
-            'updated_at': utcTime,
-            'is_unread': fromUser,
-          })
-          .eq('id', conversationId);
-    } catch (e) {
-      debugPrint('Error updating last message: $e');
-    }
+    final currentTime = DateTime.now();
+    await _store.update(
+      'wa_conversations',
+      eq: {'id': conversationId},
+      set: {
+        'last_message': message,
+        'last_message_time': currentTime.toIso8601String(),
+        'updated_at': currentTime.toUtc().toIso8601String(),
+        'is_unread': fromUser,
+      },
+    );
   }
 
   Future<void> updateAIAgentStatus({
@@ -164,45 +101,24 @@ class ConversationService {
     required bool aiEnabled,
     String defaultAgentId = '00000000-0000-0000-0000-000000000000',
   }) async {
-    try {
-      await _client
-          .from('wa_conversations')
-          .update({
-            'ai_agent_id': aiEnabled ? defaultAgentId : null,
-            'updated_at': _getUtcTimestamp(),
-          })
-          .eq('id', conversationId);
-    } catch (e) {
-      debugPrint('Error updating AI agent status: $e');
-    }
+    await _store.update(
+      'wa_conversations',
+      eq: {'id': conversationId},
+      set: {
+        'ai_agent_id': aiEnabled ? defaultAgentId : null,
+        'updated_at': _getUtcTimestamp(),
+      },
+    );
   }
 
   Future<bool> getAIAgentStatus(String conversationId) async {
-    try {
-      final response = await _client
-          .from('wa_conversations')
-          .select('ai_agent_id')
-          .eq('id', conversationId)
-          .single();
-
-      return response['ai_agent_id'] != null;
-    } catch (e) {
-      return false;
-    }
+    final row = await _store.maybeSingle('wa_conversations', {'id': conversationId});
+    return row?['ai_agent_id'] != null;
   }
 
   Future<Conversation?> getConversationById(String conversationId) async {
-    try {
-      final response = await _client
-          .from('wa_conversations')
-          .select()
-          .eq('id', conversationId)
-          .single();
-
-      return Conversation.fromMap(response);
-    } catch (e) {
-      debugPrint('Error getting conversation by ID: $e');
-      return null;
-    }
+    final row = await _store.maybeSingle('wa_conversations', {'id': conversationId});
+    if (row == null) return null;
+    return Conversation.fromMap(row);
   }
 }

@@ -1,11 +1,11 @@
 [Desktop Entry]
 Type=Application
 Version=1.0
-Name=Guptik Desktop
-Comment=A secure vault application for managing files and encryption
+Name=GupTik
+Comment=GupTik home node — vault, Trust Me, media, WhatsApp, Meta
 Exec=guptik_desktop
 Icon=guptik_desktop
-Categories=Utility;FileManager;
+Categories=Utility;Network;
 Terminal=false
 StartupNotify=true
-
+StartupWMClass=com.stoneage.guptik_desktop

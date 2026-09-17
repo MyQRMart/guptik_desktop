@@ -4,15 +4,6 @@ class DatatablesLogic {
   final PostgresService _postgres = PostgresService();
 
   Future<void> createAdvancedTable(String tableName, List<Map<String, dynamic>> columns) async {
-    // 1. Automatically grant schema permissions to prevent the 42501 error on PostgreSQL 15+
-    try {
-      await _postgres.executeRawQuery('GRANT ALL ON SCHEMA public TO public;');
-      print('DEBUG: Granted schema permissions successfully.');
-    } catch (e) {
-      print('DEBUG ERROR GRANTING SCHEMA PERMISSIONS: $e');
-    }
-
-    // 2. Build Columns
     List<String> colDefs = [];
     for (var col in columns) {
       final colName = col['name'].toString().trim();

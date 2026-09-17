@@ -3,7 +3,8 @@ import 'package:flutter/foundation.dart';
 import 'package:uuid/uuid.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
 import 'package:flutter_secure_storage/flutter_secure_storage.dart';
-import 'package:postgres/postgres.dart'; 
+import 'package:postgres/postgres.dart';
+import 'package:path/path.dart' as p;
 import '../external/docker_service.dart';
 
 class PlayerUploadService {
@@ -17,14 +18,17 @@ class PlayerUploadService {
   final String _dbPass = 'GuptikSystemPassword2026';
 
   // 🚀 MOVED: Helper function is now a class method
-  Future<void> syncChannelToAdmin(String userId, String channelName) async {
+  Future<void> syncChannelToAdmin(String userId, String channelName, {String? tunnelUrl}) async {
     try {
-      await _supabase.from('mp_channels').upsert({
+      final row = <String, dynamic>{
         'owner_uid': userId,
-        'channel_id': userId, 
+        'channel_id': userId,
         'channel_name': channelName,
-      }, onConflict: 'channel_id');
-      
+      };
+      if (tunnelUrl != null && tunnelUrl.isNotEmpty) {
+        row['tunnel_url'] = DockerService.sanitizeTunnelUrl(tunnelUrl);
+      }
+      await _supabase.from('mp_channels').upsert(row, onConflict: 'channel_id');
       debugPrint("✅ Admin Sync: Channel '$channelName' registered in mp_channels.");
     } catch (e) {
       debugPrint("❌ Admin Sync Error: $e");
@@ -66,15 +70,14 @@ class PlayerUploadService {
     if (dynamicVaultPath == null) return false; 
 
     try {
-      final localVaultDirectory = Directory('$dynamicVaultPath\\vault_files\\'); 
+      final localVaultDirectory = Directory(p.join(dynamicVaultPath, 'vault_files'));
       if (!await localVaultDirectory.exists()) await localVaultDirectory.create(recursive: true);
-      await File(realLocalFilePath).copy('${localVaultDirectory.path}\\$vaultFileName');
+      await File(realLocalFilePath).copy(p.join(localVaultDirectory.path, vaultFileName));
 
-      // 🚀 THE FIX: COPY THE THUMBNAIL NEXT TO THE VIDEO WITH THE SAME UUID
       final originalThumbPath = realLocalFilePath.replaceAll(RegExp(r'\.[^.]+$'), '.jpg');
-      final vaultThumbName = '$videoId.jpg'; // Matches the new Video ID
+      final vaultThumbName = '$videoId.jpg';
       if (await File(originalThumbPath).exists()) {
-        await File(originalThumbPath).copy('${localVaultDirectory.path}\\$vaultThumbName');
+        await File(originalThumbPath).copy(p.join(localVaultDirectory.path, vaultThumbName));
         debugPrint("✅ Thumbnail copied to Vault as $vaultThumbName");
       }
 
@@ -88,7 +91,7 @@ class PlayerUploadService {
     // ==========================================
     try {
       // 1. Sync the Channel name to Admin
-      await syncChannelToAdmin(currentUser.id, channelName);
+      await syncChannelToAdmin(currentUser.id, channelName, tunnelUrl: publicUrl);
 
       // 2. Sync the Video to Admin
       await _supabase.from('mp_videos').insert({
@@ -146,11 +149,12 @@ class PlayerUploadService {
       await connection.execute(
         Sql.named("""
           INSERT INTO mp_videos 
-          (id, channel_id, title, description, file_path, tags, category, visibility, is_reel, monetization_enabled, made_for_kids, age_rating) 
-          VALUES (@vid::UUID, @cid, @title, @desc, @path, @tags, @cat, @vis, @reel, @mon, @kids, @age)
+          (id, video_id, creator_uid, channel_id, title, description, file_path, tags, category, visibility, is_reel, monetization_enabled, made_for_kids, age_rating) 
+          VALUES (@vid::UUID, @vid, @uid, @cid, @title, @desc, @path, @tags, @cat, @vis, @reel, @mon, @kids, @age)
         """),
         parameters: {
           'vid': videoId,
+          'uid': currentUser.id,
           'cid': currentUser.id,
           'title': title,
           'desc': description,

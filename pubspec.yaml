@@ -1,7 +1,7 @@
 name: guptik_desktop
 description: "A new Flutter project."
 publish_to: 'none'
-version: 0.1.0
+version: 0.2.0
 
 environment:
   sdk: ^3.9.2
@@ -10,7 +10,7 @@ dependencies:
   flutter:
     sdk: flutter
   google_fonts: ^8.0.1
-  lucide_icons: ^0.257.0
+  lucide_flutter: ^1.42.0
   glassmorphism: ^3.0.0
   qr_flutter: ^4.1.0
   window_manager: ^0.5.1
@@ -55,8 +55,10 @@ flutter:
     - lib/assets/logonobg.png
 
 flutter_launcher_icons:
-  android: true
+  android: false
   ios: false
+  linux:
+    generate: true
+    image_path: "lib/assets/logonobg.png"
+    icon_size: 256
   image_path: "lib/assets/logonobg.png"
-  adaptive_icon_background: "#00000000"
-  adaptive_icon_foreground: "lib/assets/logonobg.png"

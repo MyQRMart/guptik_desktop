@@ -1,6 +1,7 @@
 import 'dart:io';
 import 'package:process_run/shell.dart';
 import 'package:flutter_secure_storage/flutter_secure_storage.dart';
+import '../updates/guptik_version.dart';
 
 class DockerService {
 
@@ -36,6 +37,128 @@ class DockerService {
   }
 
   void setVaultPath(String path) => _vaultPath = path;
+
+  static const composeProject = 'guptik';
+
+  static String get _markerPath {
+    final home = Platform.environment['HOME'] ?? '.';
+    return '$home/.config/guptik/vault_path';
+  }
+
+  static Future<void> rememberVault(String path) async {
+    final f = File(_markerPath);
+    await f.parent.create(recursive: true);
+    await f.writeAsString(path.trim());
+  }
+
+  static Future<String?> rememberedVault() async {
+    try {
+      final f = File(_markerPath);
+      if (!await f.exists()) return null;
+      final p = (await f.readAsString()).trim();
+      if (p.isEmpty) return null;
+      if (File('$p/docker-compose.yml').existsSync()) return p;
+    } catch (_) {}
+    return null;
+  }
+
+  /// Running or stopped GupTik node on this machine (ports 55000/55432 or guptik-tunnel).
+  static Future<GuptikStack?> findExistingStack() async {
+    try {
+      final r = await Process.run('docker', [
+        'ps', '-a',
+        '--format',
+        '{{.Names}}\t{{.Ports}}\t{{.Label "com.docker.compose.project"}}\t{{.Label "com.docker.compose.project.working_dir"}}\t{{.Status}}',
+      ]);
+      if (r.exitCode != 0) return null;
+      GuptikStack? best;
+      for (final line in r.stdout.toString().split('\n')) {
+        if (line.trim().isEmpty) continue;
+        final p = line.split('\t');
+        if (p.length < 5) continue;
+        final names = p[0];
+        final ports = p[1];
+        final project = p[2];
+        var dir = p[3];
+        final status = p[4];
+        final hit = ports.contains('55000') ||
+            ports.contains('55432') ||
+            names.contains('guptik-tunnel') ||
+            (names.contains('gateway') && ports.contains('55000'));
+        if (!hit) continue;
+        if (dir.isEmpty) dir = await rememberedVault() ?? '';
+        if (dir.isEmpty) continue;
+        final running = status.toLowerCase().startsWith('up');
+        final stack = GuptikStack(
+          workingDir: dir,
+          project: project.isEmpty ? composeProject : project,
+          running: running,
+        );
+        if (running) return stack;
+        best ??= stack;
+      }
+      if (best != null) return best;
+    } catch (_) {}
+    final marked = await rememberedVault();
+    if (marked != null) {
+      return GuptikStack(workingDir: marked, project: composeProject, running: false);
+    }
+    return null;
+  }
+
+  static Future<bool> gatewayUp() async {
+    try {
+      final s = await Socket.connect('127.0.0.1', 55000, timeout: const Duration(seconds: 2));
+      s.destroy();
+      return true;
+    } catch (_) {
+      return false;
+    }
+  }
+
+  static String nestNodeDir(String selected) {
+    var p = selected.trim();
+    while (p.endsWith('/') || p.endsWith('\\')) {
+      p = p.substring(0, p.length - 1);
+    }
+    final name = p.split(RegExp(r'[/\\]')).last;
+    if (name == 'GupTik') return p;
+    if (File('$p/docker-compose.yml').existsSync()) return p;
+    if (File('$p${Platform.pathSeparator}GupTik${Platform.pathSeparator}docker-compose.yml').existsSync()) {
+      return '$p${Platform.pathSeparator}GupTik';
+    }
+    return '$p${Platform.pathSeparator}GupTik';
+  }
+
+  Future<void> writeNodeVersion() async {
+    if (_vaultPath == null) return;
+    await File('$_vaultPath/.node-version').writeAsString(GuptikVersion.node);
+  }
+
+  /// Refresh gateway code in the existing stack. Does not wipe Postgres or vault files.
+  Future<void> applyNodeUpdate() async {
+    final existing = await findExistingStack();
+    if (existing != null) {
+      _vaultPath = existing.workingDir;
+    }
+    if (_vaultPath == null) throw Exception('No GupTik node on this PC');
+    Directory('$_vaultPath/gateway').createSync(recursive: true);
+    final env = File('$_vaultPath/.env');
+    var publicUrl = 'localhost:55000';
+    if (env.existsSync()) {
+      for (final line in env.readAsLinesSync()) {
+        if (line.startsWith('PUBLIC_URL=')) {
+          publicUrl = line.substring('PUBLIC_URL='.length).trim();
+        }
+      }
+    }
+    await _generateGatewayFiles(publicUrl);
+    await rememberVault(_vaultPath!);
+    final project = existing?.project ?? composeProject;
+    final shell = Shell(workingDirectory: _vaultPath, environment: Platform.environment, throwOnError: false);
+    await shell.run('docker compose -p $project up -d --build gateway');
+    await writeNodeVersion();
+  }
 
   Future<void> autoConfigure({
     required String dbPass,
@@ -74,11 +197,14 @@ CF_TUNNEL_TOKEN=$tunnelToken
 PUBLIC_URL=$publicUrl
 VAULT_PATH=$_vaultPath
 ''');
+    await rememberVault(_vaultPath!);
 
     await _generateGatewayFiles(publicUrl);
+    await writeNodeVersion();
 
     final composeFile = File('$_vaultPath/docker-compose.yml');
     await composeFile.writeAsString('''
+name: guptik
 services:
   guptik-tunnel:
     image: cloudflare/cloudflared:latest
@@ -93,6 +219,8 @@ services:
     working_dir: /app
     ports:
       - "55000:8080"
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
     volumes:
       - ./gateway:/app
       - ./vault_files:/app/storage
@@ -222,6 +350,7 @@ void main() async {
   router.post('/vault/upload/<filename>', (Request req, String filename) async {
     IOSink? sink;
     try {
+      filename = Uri.decodeComponent(filename);
       final file = File('/app/storage/$filename');
       sink = file.openWrite();
       await sink.addStream(req.read());
@@ -254,6 +383,7 @@ void main() async {
 
   router.get('/vault/files/<filename>', (Request req, String filename) async {
     try {
+      filename = Uri.decodeComponent(filename);
       final token = req.url.queryParameters['token'];
       final email = req.url.queryParameters['email'];
 
@@ -268,7 +398,19 @@ void main() async {
       );
       await connection.close();
 
-      if (result.isEmpty) return Response.forbidden('Access Denied: This file has not been shared.');
+      Future<Response> serve() async {
+        final file = File('/app/storage/$filename');
+        if (!await file.exists()) return Response.notFound('File not found.');
+        final mimeType = lookupMimeType(file.path) ?? 'application/octet-stream';
+        return Response.ok(file.openRead(), headers: {
+          'Content-Type': mimeType,
+          'Content-Length': (await file.length()).toString(),
+          'Content-Disposition': 'inline; filename="$filename"',
+        });
+      }
+
+      // No share row = owner / Trust Me on this node.
+      if (result.isEmpty) return await serve();
 
       final row = result.first;
       final isPublic = row[0] as bool;
@@ -303,15 +445,7 @@ void main() async {
         if (!allowedEmails.contains(email.toLowerCase().trim())) return Response.forbidden('Access Denied: Email not authorized.');
       }
 
-      final file = File('/app/storage/$filename');
-      if (!await file.exists()) return Response.notFound('File not found.');
-
-      final mimeType = lookupMimeType(file.path) ?? 'application/octet-stream';
-      return Response.ok(file.openRead(), headers: {
-        'Content-Type': mimeType,
-        'Content-Length': (await file.length()).toString(),
-        'Content-Disposition': 'inline; filename="$filename"',
-      });
+      return await serve();
     } catch (e) {
       return Response.internalServerError(body: 'Server Error');
     }
@@ -389,6 +523,24 @@ void main() async {
           ORDER BY r.reposted_at DESC
           """
         );
+      } else if (type == 'vault_sys') {
+        final dir = Directory('/app/storage');
+        final List<Map<String, dynamic>> files = [];
+        if (dir.existsSync()) {
+          for (final entity in dir.listSync()) {
+            if (entity is! File) continue;
+            final name = entity.path.split('/').last;
+            files.add({
+              'title': name,
+              'name': name,
+              'size_bytes': entity.lengthSync(),
+              'is_file': true,
+              'video_id': '',
+            });
+          }
+        }
+        await connection.close();
+        return Response.ok(jsonEncode(files), headers: {'Content-Type': 'application/json'});
       } else if (type == 'drafts') {
         // 🚀 FIX: Also missing — mobile's "Drafts" folder had no backing
         // branch either, so it always came back empty too.
@@ -669,6 +821,126 @@ void main() async {
     }
   });
 
+  Future<Map<String, String>> _readAiConfig() async {
+    final connection = await Connection.open(
+      Endpoint(host: 'db', port: 5432, database: 'postgres', username: 'postgres', password: 'GuptikSystemPassword2026'),
+      settings: const ConnectionSettings(sslMode: SslMode.disable),
+    );
+    await connection.execute("CREATE TABLE IF NOT EXISTS system_ai_config (key TEXT PRIMARY KEY, value TEXT)");
+    final result = await connection.execute("SELECT key, value FROM system_ai_config");
+    await connection.close();
+    final db = <String, String>{};
+    for (final row in result) {
+      db[row[0].toString()] = row[1].toString();
+    }
+    return db;
+  }
+
+  router.get('/api/social-ai', (Request req) async {
+    try {
+      final db = await _readAiConfig();
+      return Response.ok(jsonEncode({
+        'use_local': db['social_use_local'] == 'true',
+        'fb_comments': db['social_fb_comments'] != 'false',
+        'fb_dm': db['social_fb_dm'] != 'false',
+        'ig_comments': db['social_ig_comments'] != 'false',
+        'ig_dm': db['social_ig_dm'] != 'false',
+        'wa': db['social_wa'] != 'false',
+        'provider': db['provider'] ?? currentAiProvider,
+        'model_name': db['model_name'] ?? currentAiModelName,
+      }), headers: {'Content-Type': 'application/json'});
+    } catch (e) {
+      return Response.internalServerError(body: jsonEncode({'error': e.toString()}));
+    }
+  });
+
+  router.post('/api/social-ai', (Request req) async {
+    try {
+      final data = jsonDecode(await req.readAsString()) as Map;
+      final connection = await Connection.open(
+        Endpoint(host: 'db', port: 5432, database: 'postgres', username: 'postgres', password: 'GuptikSystemPassword2026'),
+        settings: const ConnectionSettings(sslMode: SslMode.disable),
+      );
+      await connection.execute("CREATE TABLE IF NOT EXISTS system_ai_config (key TEXT PRIMARY KEY, value TEXT)");
+      Future<void> put(String k, String v) async {
+        await connection.execute(
+          Sql.named("INSERT INTO system_ai_config (key, value) VALUES (@k, @v) ON CONFLICT (key) DO UPDATE SET value = @v"),
+          parameters: {'k': k, 'v': v},
+        );
+      }
+      if (data.containsKey('use_local')) await put('social_use_local', data['use_local'] == true ? 'true' : 'false');
+      if (data.containsKey('fb_comments')) await put('social_fb_comments', data['fb_comments'] == true ? 'true' : 'false');
+      if (data.containsKey('fb_dm')) await put('social_fb_dm', data['fb_dm'] == true ? 'true' : 'false');
+      if (data.containsKey('ig_comments')) await put('social_ig_comments', data['ig_comments'] == true ? 'true' : 'false');
+      if (data.containsKey('ig_dm')) await put('social_ig_dm', data['ig_dm'] == true ? 'true' : 'false');
+      if (data.containsKey('wa')) await put('social_wa', data['wa'] == true ? 'true' : 'false');
+      await connection.close();
+      return Response.ok(jsonEncode({'status': 'ok'}), headers: {'Content-Type': 'application/json'});
+    } catch (e) {
+      return Response.internalServerError(body: jsonEncode({'error': e.toString()}));
+    }
+  });
+
+  router.post('/api/social-reply', (Request req) async {
+    try {
+      final body = jsonDecode(await req.readAsString()) as Map;
+      final db = await _readAiConfig();
+      if (db['social_use_local'] != 'true') {
+        return Response.ok(jsonEncode({'ok': false, 'reason': 'hosted', 'text': ''}), headers: {'Content-Type': 'application/json'});
+      }
+      final platform = (body['platform'] ?? 'facebook').toString();
+      final kind = (body['kind'] ?? 'message').toString();
+      final inbound = (body['text'] ?? '').toString().trim();
+      final extra = (body['extra_prompt'] ?? '').toString().trim();
+      if (inbound.isEmpty) return Response.badRequest(body: 'text required');
+
+      var endpoint = (db['endpoint_url']?.isNotEmpty == true) ? db['endpoint_url']! : currentAiEndpointUrl;
+      final provider = (db['provider']?.isNotEmpty == true) ? db['provider']! : currentAiProvider;
+      final model = (db['model_name']?.isNotEmpty == true) ? db['model_name']! : currentAiModelName;
+      var key = (db['api_key']?.isNotEmpty == true) ? db['api_key']! : currentAiApiKey;
+      key = key.replaceAll(RegExp(r'\s'), '').trim();
+      if (key.toLowerCase().startsWith('bearer')) key = key.substring(6).trim();
+      endpoint = endpoint.replaceAll('localhost', 'host.docker.internal').replaceAll('127.0.0.1', 'host.docker.internal');
+
+      final system = extra.isNotEmpty
+          ? extra
+          : 'You reply as the business on $platform. Kind: $kind. Short, human, no hashtags unless asked. One reply only.';
+      final messages = [
+        {'role': 'system', 'content': system},
+        {'role': 'user', 'content': inbound},
+      ];
+      final headers = <String, String>{'Content-Type': 'application/json'};
+      if (provider == 'OpenRouter') {
+        headers['HTTP-Referer'] = 'https://guptik.com';
+        headers['X-Title'] = 'Guptik Node';
+      }
+      if (key.isNotEmpty) {
+        if (provider == 'Anthropic') {
+          headers['x-api-key'] = key;
+          headers['anthropic-version'] = '2023-06-01';
+        } else {
+          headers['Authorization'] = 'Bearer $key';
+        }
+      }
+      final res = await http.post(Uri.parse(endpoint), headers: headers, body: jsonEncode({'model': model, 'messages': messages, 'stream': false})).timeout(const Duration(seconds: 45));
+      String text = '';
+      if (res.statusCode == 200) {
+        final data = jsonDecode(res.body);
+        if (data['choices'] != null && data['choices'].isNotEmpty) {
+          text = data['choices'][0]['message']['content']?.toString() ?? '';
+        } else if (data['message'] != null) {
+          text = data['message']['content']?.toString() ?? '';
+        } else if (data['content'] is List) {
+          text = data['content'][0]['text']?.toString() ?? '';
+        }
+      } else {
+        return Response.internalServerError(body: jsonEncode({'ok': false, 'error': res.body}));
+      }
+      return Response.ok(jsonEncode({'ok': true, 'text': text.trim(), 'model': model}), headers: {'Content-Type': 'application/json'});
+    } catch (e) {
+      return Response.internalServerError(body: jsonEncode({'ok': false, 'error': e.toString()}));
+    }
+  });
 
   router.post('/trustme/handshake/initiate', (Request req) async {
     try {
@@ -2199,7 +2471,7 @@ void main() async {
         """),
         parameters: {
           'vid': vid,
-          'cid': data['channel_id'] ?? 'unknown',
+          'cid': data['channel_id']?.toString() ?? data['creator_uid']?.toString() ?? 'unknown',
           'uid': uid,
           'dur': data['watch_duration_seconds'] ?? 0,
           'pct': data['percent_completed'] ?? 0.0,
@@ -2240,9 +2512,9 @@ void main() async {
           w.creator_uid,
           w.watch_timestamp
         FROM mp_watch_history w
-        JOIN mp_videos v ON CAST(w.video_id AS UUID) = v.id
-        JOIN mp_channels c ON v.channel_id = c.channel_id
-        WHERE v.is_deleted = FALSE
+        LEFT JOIN mp_videos v ON CAST(w.video_id AS TEXT) = CAST(v.id AS TEXT)
+        LEFT JOIN mp_channels c ON v.channel_id = c.channel_id
+        WHERE v.id IS NULL OR v.is_deleted = FALSE
         ORDER BY w.watch_timestamp DESC
         LIMIT 100
       """);
@@ -2285,12 +2557,12 @@ void main() async {
       
       final String vid = data['video_id'].toString();
       final String uid = data['creator_uid']?.toString() ?? '';
-      final String folderName = data['folder_name'] ?? 'Default';
+      final String viewerUid = data['viewer_uid']?.toString() ?? uid;
+      final String folderName = data['folder_name'] ?? 'Watch Later';
 
-      // 1. Check if already saved by this user
       final existing = await connection.execute(
-        Sql.named("SELECT id FROM mp_saved_videos WHERE video_id = @vid AND creator_uid = @uid LIMIT 1"),
-        parameters: {'vid': vid, 'uid': uid}
+        Sql.named("SELECT id FROM mp_saved_videos WHERE video_id = @vid AND (viewer_uid = @viewer OR (viewer_uid IS NULL AND creator_uid = @uid)) LIMIT 1"),
+        parameters: {'vid': vid, 'uid': uid, 'viewer': viewerUid}
       );
 
       if (existing.isNotEmpty) {
@@ -2298,12 +2570,12 @@ void main() async {
         return Response(200, body: jsonEncode({'status': 'already_saved'}));
       }
 
-      // 2. Insert safely if it doesn't exist yet
       await connection.execute(
-        Sql.named("INSERT INTO mp_saved_videos (video_id, creator_uid, folder_name) VALUES (@vid, @uid, @folder)"),
+        Sql.named("INSERT INTO mp_saved_videos (video_id, creator_uid, viewer_uid, folder_name) VALUES (@vid, @uid, @viewer, @folder)"),
         parameters: {
-          'vid': vid, 
+          'vid': vid,
           'uid': uid,
+          'viewer': viewerUid,
           'folder': folderName,
         }
       );
@@ -2318,6 +2590,59 @@ void main() async {
       return Response(200, body: jsonEncode({'status': 'saved'}));
     } catch (e) {
       return Response(500, body: 'Save Error: $e');
+    }
+  });
+
+  router.get('/player/video/saved/list', (Request req) async {
+    try {
+      final connection = await Connection.open(
+        Endpoint(host: 'db', port: 5432, database: 'postgres', username: 'postgres', password: 'GuptikSystemPassword2026'),
+        settings: const ConnectionSettings(sslMode: SslMode.disable),
+      );
+      final result = await connection.execute("""
+        SELECT
+          CAST(s.video_id AS TEXT),
+          v.title,
+          v.description,
+          v.file_path,
+          v.view_count_local,
+          v.like_count_local,
+          v.comment_count_local,
+          c.channel_name,
+          v.is_reel,
+          v.upload_timestamp,
+          v.visibility,
+          s.creator_uid,
+          s.saved_timestamp
+        FROM mp_saved_videos s
+        LEFT JOIN mp_videos v ON CAST(s.video_id AS TEXT) = CAST(v.id AS TEXT)
+        LEFT JOIN mp_channels c ON v.channel_id = c.channel_id
+        WHERE v.id IS NULL OR v.is_deleted = FALSE
+        ORDER BY s.saved_timestamp DESC
+        LIMIT 100
+      """);
+      await connection.close();
+      final List<Map<String, dynamic>> videos = [];
+      for (final row in result) {
+        videos.add({
+          'video_id': row[0].toString(),
+          'title': row[1]?.toString() ?? '',
+          'description': row[2]?.toString() ?? '',
+          'file_path': row[3]?.toString() ?? '',
+          'view_count': row[4] ?? 0,
+          'like_count': row[5] ?? 0,
+          'comment_count': row[6] ?? 0,
+          'channel_name': row[7]?.toString() ?? 'Creator',
+          'is_reel': row[8] as bool? ?? false,
+          'created_at': row[9]?.toString() ?? DateTime.now().toString(),
+          'visibility': row[10]?.toString() ?? 'public',
+          'creator_uid': row[11]?.toString() ?? '',
+          'saved_timestamp': row[12]?.toString() ?? DateTime.now().toString(),
+        });
+      }
+      return Response.ok(jsonEncode(videos), headers: {'Content-Type': 'application/json'});
+    } catch (e) {
+      return Response.internalServerError(body: jsonEncode({'error': e.toString()}));
     }
   });
 
@@ -2781,7 +3106,418 @@ void main() async {
       return Response(200, body: jsonEncode({'is_subscribed': false}), headers: {'Content-Type': 'application/json'}); 
     }
   });
- 
+
+  router.get('/player/playlists', (Request req) async {
+    try {
+      final cid = req.url.queryParameters['channel_id'] ?? '';
+      final connection = await Connection.open(
+        Endpoint(host: 'db', port: 5432, database: 'postgres', username: 'postgres', password: 'GuptikSystemPassword2026'),
+        settings: const ConnectionSettings(sslMode: SslMode.disable),
+      );
+      final result = await connection.execute(
+        Sql.named("""
+          SELECT id, channel_id, name, description, is_public, video_count, created_at
+          FROM mp_playlists WHERE channel_id = @cid ORDER BY updated_at DESC
+        """),
+        parameters: {'cid': cid},
+      );
+      await connection.close();
+      final list = result.map((row) => {
+        'id': row[0].toString(),
+        'channel_id': row[1]?.toString() ?? '',
+        'name': row[2]?.toString() ?? '',
+        'description': row[3]?.toString() ?? '',
+        'is_public': row[4] ?? true,
+        'video_count': row[5] ?? 0,
+        'created_at': row[6]?.toString() ?? '',
+      }).toList();
+      return Response.ok(jsonEncode(list), headers: {'Content-Type': 'application/json'});
+    } catch (e) {
+      return Response.internalServerError(body: jsonEncode({'error': e.toString()}));
+    }
+  });
+
+  router.post('/player/playlists', (Request req) async {
+    try {
+      final data = jsonDecode(await req.readAsString());
+      final connection = await Connection.open(
+        Endpoint(host: 'db', port: 5432, database: 'postgres', username: 'postgres', password: 'GuptikSystemPassword2026'),
+        settings: const ConnectionSettings(sslMode: SslMode.disable),
+      );
+      final result = await connection.execute(
+        Sql.named("""
+          INSERT INTO mp_playlists (channel_id, name, description, is_public)
+          VALUES (@cid, @name, @desc, @pub) RETURNING id
+        """),
+        parameters: {
+          'cid': data['channel_id']?.toString() ?? '',
+          'name': data['name']?.toString() ?? 'Playlist',
+          'desc': data['description']?.toString() ?? '',
+          'pub': data['is_public'] ?? true,
+        },
+      );
+      await connection.close();
+      return Response.ok(jsonEncode({'id': result.first.first.toString()}), headers: {'Content-Type': 'application/json'});
+    } catch (e) {
+      return Response.internalServerError(body: jsonEncode({'error': e.toString()}));
+    }
+  });
+
+  router.get('/player/playlists/<playlistId>/videos', (Request req, String playlistId) async {
+    try {
+      final connection = await Connection.open(
+        Endpoint(host: 'db', port: 5432, database: 'postgres', username: 'postgres', password: 'GuptikSystemPassword2026'),
+        settings: const ConnectionSettings(sslMode: SslMode.disable),
+      );
+      final result = await connection.execute(
+        Sql.named("""
+          SELECT CAST(pv.video_id AS TEXT), v.title, v.file_path, c.channel_name, v.is_reel
+          FROM mp_playlist_videos pv
+          LEFT JOIN mp_videos v ON pv.video_id = v.id
+          LEFT JOIN mp_channels c ON v.channel_id = c.channel_id
+          WHERE pv.playlist_id = @pid
+          ORDER BY pv.position
+        """),
+        parameters: {'pid': playlistId},
+      );
+      await connection.close();
+      final list = result.map((row) => {
+        'video_id': row[0].toString(),
+        'title': row[1]?.toString() ?? '',
+        'file_path': row[2]?.toString() ?? '',
+        'channel_name': row[3]?.toString() ?? '',
+        'is_reel': row[4] as bool? ?? false,
+      }).toList();
+      return Response.ok(jsonEncode(list), headers: {'Content-Type': 'application/json'});
+    } catch (e) {
+      return Response.internalServerError(body: jsonEncode({'error': e.toString()}));
+    }
+  });
+
+  router.get('/player/drafts', (Request req) async {
+    try {
+      final cid = req.url.queryParameters['channel_id'] ?? '';
+      final connection = await Connection.open(
+        Endpoint(host: 'db', port: 5432, database: 'postgres', username: 'postgres', password: 'GuptikSystemPassword2026'),
+        settings: const ConnectionSettings(sslMode: SslMode.disable),
+      );
+      final result = await connection.execute(
+        Sql.named("""
+          SELECT id, channel_id, title, description, last_edited_at, created_at
+          FROM mp_draft_videos WHERE channel_id = @cid ORDER BY last_edited_at DESC
+        """),
+        parameters: {'cid': cid},
+      );
+      await connection.close();
+      final list = result.map((row) => {
+        'id': row[0].toString(),
+        'channel_id': row[1]?.toString() ?? '',
+        'title': row[2]?.toString() ?? 'Untitled draft',
+        'description': row[3]?.toString() ?? '',
+        'last_edited_at': row[4]?.toString() ?? '',
+        'created_at': row[5]?.toString() ?? '',
+      }).toList();
+      return Response.ok(jsonEncode(list), headers: {'Content-Type': 'application/json'});
+    } catch (e) {
+      return Response.internalServerError(body: jsonEncode({'error': e.toString()}));
+    }
+  });
+
+  router.post('/contacts/sync', (Request req) async {
+    try {
+      final data = jsonDecode(await req.readAsString());
+      final List contacts = data['contacts'] ?? [];
+      final bool replace = data['replace'] == true;
+      final connection = await Connection.open(
+        Endpoint(host: 'db', port: 5432, database: 'postgres', username: 'postgres', password: 'GuptikSystemPassword2026'),
+        settings: const ConnectionSettings(sslMode: SslMode.disable),
+      );
+      if (replace) {
+        await connection.execute('DELETE FROM gt_contact_group_members');
+        await connection.execute('DELETE FROM gt_contact_addresses');
+        await connection.execute('DELETE FROM gt_contact_emails');
+        await connection.execute('DELETE FROM gt_contact_phones');
+        await connection.execute('DELETE FROM gt_contacts');
+        await connection.execute('DELETE FROM gt_contact_groups');
+      }
+      var upserted = 0;
+      for (final raw in contacts) {
+        final c = raw as Map;
+        final deviceId = c['device_id']?.toString() ?? '';
+        if (deviceId.isEmpty) continue;
+        final result = await connection.execute(
+          Sql.named("""
+            INSERT INTO gt_contacts (device_id, display_name, given_name, family_name, organization, job_title, notes, is_starred, synced_at)
+            VALUES (@did, @name, @gn, @fn, @org, @job, @notes, @star, NOW())
+            ON CONFLICT (device_id) DO UPDATE SET
+              display_name = EXCLUDED.display_name,
+              given_name = EXCLUDED.given_name,
+              family_name = EXCLUDED.family_name,
+              organization = EXCLUDED.organization,
+              job_title = EXCLUDED.job_title,
+              notes = EXCLUDED.notes,
+              is_starred = EXCLUDED.is_starred,
+              synced_at = NOW()
+            RETURNING id
+          """),
+          parameters: {
+            'did': deviceId,
+            'name': c['display_name']?.toString() ?? 'Unknown',
+            'gn': c['given_name']?.toString() ?? '',
+            'fn': c['family_name']?.toString() ?? '',
+            'org': c['organization']?.toString() ?? '',
+            'job': c['job_title']?.toString() ?? '',
+            'notes': c['notes']?.toString() ?? '',
+            'star': c['is_starred'] == true,
+          },
+        );
+        final cid = result.first.first;
+        await connection.execute(Sql.named('DELETE FROM gt_contact_phones WHERE contact_id = @id'), parameters: {'id': cid});
+        await connection.execute(Sql.named('DELETE FROM gt_contact_emails WHERE contact_id = @id'), parameters: {'id': cid});
+        await connection.execute(Sql.named('DELETE FROM gt_contact_addresses WHERE contact_id = @id'), parameters: {'id': cid});
+        await connection.execute(Sql.named('DELETE FROM gt_contact_group_members WHERE contact_id = @id'), parameters: {'id': cid});
+        for (final p in (c['phones'] as List? ?? [])) {
+          final m = p as Map;
+          final num = m['number']?.toString() ?? '';
+          if (num.isEmpty) continue;
+          await connection.execute(
+            Sql.named('INSERT INTO gt_contact_phones (contact_id, number, label) VALUES (@id, @n, @l)'),
+            parameters: {'id': cid, 'n': num, 'l': m['label']?.toString() ?? ''},
+          );
+        }
+        for (final e in (c['emails'] as List? ?? [])) {
+          final m = e as Map;
+          final addr = m['address']?.toString() ?? '';
+          if (addr.isEmpty) continue;
+          await connection.execute(
+            Sql.named('INSERT INTO gt_contact_emails (contact_id, email, label) VALUES (@id, @n, @l)'),
+            parameters: {'id': cid, 'n': addr, 'l': m['label']?.toString() ?? ''},
+          );
+        }
+        for (final a in (c['addresses'] as List? ?? [])) {
+          final m = a as Map;
+          await connection.execute(
+            Sql.named("""
+              INSERT INTO gt_contact_addresses (contact_id, formatted, street, city, region, postcode, country, label)
+              VALUES (@id, @f, @s, @c, @r, @p, @co, @l)
+            """),
+            parameters: {
+              'id': cid,
+              'f': m['formatted']?.toString() ?? '',
+              's': m['street']?.toString() ?? '',
+              'c': m['city']?.toString() ?? '',
+              'r': m['region']?.toString() ?? '',
+              'p': m['postcode']?.toString() ?? '',
+              'co': m['country']?.toString() ?? '',
+              'l': m['label']?.toString() ?? '',
+            },
+          );
+        }
+        for (final g in (c['groups'] as List? ?? [])) {
+          final gid = g.toString();
+          if (gid.isEmpty) continue;
+          await connection.execute(
+            Sql.named("INSERT INTO gt_contact_groups (id, name, synced_at) VALUES (@gid, @gid, NOW()) ON CONFLICT (id) DO UPDATE SET synced_at = NOW()"),
+            parameters: {'gid': gid},
+          );
+          await connection.execute(
+            Sql.named("INSERT INTO gt_contact_group_members (group_id, contact_id) VALUES (@gid, @cid) ON CONFLICT DO NOTHING"),
+            parameters: {'gid': gid, 'cid': cid},
+          );
+        }
+        upserted++;
+      }
+      final List groups = data['groups'] ?? [];
+      for (final raw in groups) {
+        final g = raw as Map;
+        final gid = g['id']?.toString() ?? '';
+        if (gid.isEmpty) continue;
+        await connection.execute(
+          Sql.named("""
+            INSERT INTO gt_contact_groups (id, name, synced_at)
+            VALUES (@gid, @name, NOW())
+            ON CONFLICT (id) DO UPDATE SET name = EXCLUDED.name, synced_at = NOW()
+          """),
+          parameters: {'gid': gid, 'name': g['name']?.toString() ?? gid},
+        );
+      }
+      await connection.close();
+      return Response.ok(jsonEncode({'status': 'ok', 'upserted': upserted}), headers: {'Content-Type': 'application/json'});
+    } catch (e) {
+      return Response.internalServerError(body: jsonEncode({'error': e.toString()}));
+    }
+  });
+
+  router.get('/contacts', (Request req) async {
+    try {
+      final connection = await Connection.open(
+        Endpoint(host: 'db', port: 5432, database: 'postgres', username: 'postgres', password: 'GuptikSystemPassword2026'),
+        settings: const ConnectionSettings(sslMode: SslMode.disable),
+      );
+      final result = await connection.execute("""
+        SELECT c.device_id, c.display_name, c.given_name, c.family_name, c.organization, c.job_title, c.notes, c.is_starred,
+          COALESCE((SELECT json_agg(json_build_object('number', p.number, 'label', p.label)) FROM gt_contact_phones p WHERE p.contact_id = c.id), '[]'::json),
+          COALESCE((SELECT json_agg(json_build_object('address', e.email, 'label', e.label)) FROM gt_contact_emails e WHERE e.contact_id = c.id), '[]'::json)
+        FROM gt_contacts c
+        ORDER BY c.display_name
+      """);
+      await connection.close();
+      final list = result.map((row) => {
+        'device_id': row[0]?.toString() ?? '',
+        'display_name': row[1]?.toString() ?? '',
+        'given_name': row[2]?.toString() ?? '',
+        'family_name': row[3]?.toString() ?? '',
+        'organization': row[4]?.toString() ?? '',
+        'job_title': row[5]?.toString() ?? '',
+        'notes': row[6]?.toString() ?? '',
+        'is_starred': row[7] == true,
+        'phones': row[8],
+        'emails': row[9],
+      }).toList();
+      return Response.ok(jsonEncode(list), headers: {'Content-Type': 'application/json'});
+    } catch (e) {
+      return Response.internalServerError(body: jsonEncode({'error': e.toString()}));
+    }
+  });
+
+  const storeTables = {
+    'fb_conversations', 'ig_conversations', 'fb_messages', 'ig_messages',
+    'wa_conversations', 'wa_messages', 'conversations',
+    'whatsapp_templates', 'wa_template_groups', 'internal_templates',
+    'fb_auto_comment_posts', 'ig_auto_comment_posts',
+    'fb_comments_responces', 'ig_comments_responces',
+  };
+
+  Future<Connection> _storeDb() => Connection.open(
+    Endpoint(host: 'db', port: 5432, database: 'postgres', username: 'postgres', password: 'GuptikSystemPassword2026'),
+    settings: const ConnectionSettings(sslMode: SslMode.disable),
+  );
+
+  Map<String, dynamic> _storeRow(ResultRow row) {
+    try {
+      return row.toColumnMap().map((k, v) => MapEntry(k.toString(), v is DateTime ? v.toIso8601String() : v));
+    } catch (_) {
+      return {'0': row[0]?.toString()};
+    }
+  }
+
+  Object? _storeVal(dynamic v) {
+    if (v is Map || v is List) return jsonEncode(v);
+    return v;
+  }
+
+  router.get('/store/<table>', (Request req, String table) async {
+    if (!storeTables.contains(table)) return Response.forbidden('table');
+    try {
+      final q = req.url.queryParameters;
+      final where = <String>[];
+      final params = <String, dynamic>{};
+      q.forEach((k, v) {
+        if (!k.startsWith('eq_')) return;
+        final col = k.substring(3);
+        if (!RegExp(r'^[a-z_]+$').hasMatch(col)) return;
+        where.add('"$col"::text = @$col');
+        params[col] = v;
+      });
+      if (q['not_null'] != null && RegExp(r'^[a-z_]+$').hasMatch(q['not_null']!)) {
+        where.add('"${q['not_null']}" IS NOT NULL');
+      }
+      var sql = 'SELECT * FROM "$table"';
+      if (where.isNotEmpty) sql += ' WHERE ${where.join(' AND ')}';
+      final order = q['order'];
+      if (order != null && RegExp(r'^[a-z_]+$').hasMatch(order)) {
+        sql += ' ORDER BY "$order" ${q['dir'] == 'asc' ? 'ASC' : 'DESC'}';
+      }
+      final limit = int.tryParse(q['limit'] ?? '');
+      if (limit != null) sql += ' LIMIT $limit';
+      final connection = await _storeDb();
+      final result = params.isEmpty
+          ? await connection.execute(sql)
+          : await connection.execute(Sql.named(sql), parameters: params);
+      await connection.close();
+      return Response.ok(jsonEncode(result.map(_storeRow).toList()), headers: {'Content-Type': 'application/json'});
+    } catch (e) {
+      return Response.internalServerError(body: jsonEncode({'error': e.toString()}));
+    }
+  });
+
+  router.post('/store/<table>', (Request req, String table) async {
+    if (!storeTables.contains(table)) return Response.forbidden('table');
+    try {
+      final row = jsonDecode(await req.readAsString()) as Map;
+      final cols = <String>[];
+      final params = <String, dynamic>{};
+      row.forEach((k, v) {
+        final col = k.toString();
+        if (!RegExp(r'^[a-z_]+$').hasMatch(col)) return;
+        if (v == null) return;
+        cols.add(col);
+        params[col] = _storeVal(v);
+      });
+      final jsonCols = {'media_info','raw_data','variables','buttons','sample_content','group_contacts','auto_reply'};
+      if (cols.isEmpty) return Response.badRequest(body: 'empty');
+      final sql = 'INSERT INTO "$table" (${cols.map((c) => '"$c"').join(',')}) VALUES (${cols.map((c) => jsonCols.contains(c) ? '@$c::jsonb' : '@$c').join(',')}) RETURNING *';
+      final connection = await _storeDb();
+      final result = await connection.execute(Sql.named(sql), parameters: params);
+      await connection.close();
+      return Response.ok(jsonEncode(_storeRow(result.first)), headers: {'Content-Type': 'application/json'});
+    } catch (e) {
+      return Response.internalServerError(body: jsonEncode({'error': e.toString()}));
+    }
+  });
+
+  router.patch('/store/<table>', (Request req, String table) async {
+    if (!storeTables.contains(table)) return Response.forbidden('table');
+    try {
+      final body = jsonDecode(await req.readAsString()) as Map;
+      final eq = Map<String, dynamic>.from(body['eq'] ?? {});
+      final set = Map<String, dynamic>.from(body['set'] ?? {});
+      if (eq.isEmpty || set.isEmpty) return Response.badRequest(body: 'eq/set');
+      final params = <String, dynamic>{};
+      final sets = <String>[];
+      set.forEach((k, v) {
+        if (!RegExp(r'^[a-z_]+$').hasMatch(k)) return;
+        sets.add('"$k" = @s_$k');
+        params['s_$k'] = _storeVal(v);
+      });
+      final wheres = <String>[];
+      eq.forEach((k, v) {
+        if (!RegExp(r'^[a-z_]+$').hasMatch(k)) return;
+        wheres.add('"$k"::text = @e_$k');
+        params['e_$k'] = v?.toString();
+      });
+      final sql = 'UPDATE "$table" SET ${sets.join(',')} WHERE ${wheres.join(' AND ')}';
+      final connection = await _storeDb();
+      await connection.execute(Sql.named(sql), parameters: params);
+      await connection.close();
+      return Response.ok(jsonEncode({'status': 'ok'}), headers: {'Content-Type': 'application/json'});
+    } catch (e) {
+      return Response.internalServerError(body: jsonEncode({'error': e.toString()}));
+    }
+  });
+
+  router.delete('/store/<table>', (Request req, String table) async {
+    if (!storeTables.contains(table)) return Response.forbidden('table');
+    try {
+      final q = req.url.queryParameters;
+      final where = <String>[];
+      final params = <String, dynamic>{};
+      q.forEach((k, v) {
+        if (!k.startsWith('eq_')) return;
+        final col = k.substring(3);
+        if (!RegExp(r'^[a-z_]+$').hasMatch(col)) return;
+        where.add('"$col"::text = @$col');
+        params[col] = v;
+      });
+      if (where.isEmpty) return Response.badRequest(body: 'eq required');
+      final connection = await _storeDb();
+      await connection.execute(Sql.named('DELETE FROM "$table" WHERE ${where.join(' AND ')}'), parameters: params);
+      await connection.close();
+      return Response.ok(jsonEncode({'status': 'ok'}), headers: {'Content-Type': 'application/json'});
+    } catch (e) {
+      return Response.internalServerError(body: jsonEncode({'error': e.toString()}));
+    }
+  });
 
 // =========================================================================
   // 🚀 MOBILE CROSS-CONNECTION PUBLISHING GATEWAY
@@ -2827,8 +3563,8 @@ void main() async {
       }
 
       // 🚀 2. FALLBACK & SANITIZATION: Automatically enforce active local network IP & Port 55000
-      if (officialCreatorUrl.isEmpty || officialCreatorUrl.contains('192.168.1.15') || officialCreatorUrl.contains('your-tunnel-url')) {
-        officialCreatorUrl = '192.168.1.186:55000';
+      if (officialCreatorUrl.isEmpty || officialCreatorUrl.contains('your-tunnel')) {
+        officialCreatorUrl = '';
       }
 
       // Enforce port 55000 for local network IPs if missing
@@ -2876,12 +3612,13 @@ void main() async {
       await connection.execute(
         Sql.named("""
           INSERT INTO mp_videos 
-          (id, channel_id, title, description, file_path, tags, category, visibility, is_reel, monetization_enabled, made_for_kids, age_rating) 
-          VALUES (@vid::UUID, @cid, @title, @desc, @path, @tags, @cat, @vis, @reel, @mon, false, 'all')
+          (id, video_id, creator_uid, channel_id, title, description, file_path, tags, category, visibility, is_reel, monetization_enabled, made_for_kids, age_rating) 
+          VALUES (@vid::UUID, @vid, @uid, @cid, @title, @desc, @path, @tags, @cat, @vis, @reel, @mon, false, 'all')
         """),
         parameters: {
           'vid': videoId,
-          'cid': channelId, // 🚀 Uses the explicitly passed mobile channel ID
+          'uid': creatorUid,
+          'cid': channelId,
           'title': title,
           'desc': description,
           'path': "/app/storage/$filename",
@@ -3039,6 +3776,10 @@ void main() async {
   });
 
   router.get('/', (Request req) => Response.ok('GUPTIK GATEWAY ONLINE'));
+  router.get('/web', (Request req) => Response.ok(
+    '<!DOCTYPE html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>GupTik node</title><style>body{font-family:Georgia,serif;background:#0b1220;color:#e8e0d0;margin:40px;max-width:640px}a{color:#c9a24e}</style></head><body><h1>GupTik node</h1><p>This page is served by the desktop on this network. Your vault and player files stay on this PC.</p><p>Gateway: online</p><p>When you are away from home, use the phone app with the same email. Public brochure: guptik.com</p><p><a href="/">health</a></p></body></html>',
+    headers: {'content-type': 'text/html; charset=utf-8'}));
+  router.get('/web/', (Request req) => Response.movedPermanently(Uri.parse('/web')));
 
   // 🚀 BACKGROUND WORKER: Automatically retries queued messages every 10 seconds!
   Timer.periodic(const Duration(seconds: 10), (timer) async {
@@ -3102,8 +3843,15 @@ void main() async {
 
   Future<void> stopStack() async {
     try {
-      if (_vaultPath == null) throw Exception("Vault path not set");
-      final result = await Process.run('docker-compose', ['-f', 'docker-compose.yml', 'down'], workingDirectory: _vaultPath);
+      final existing = await findExistingStack();
+      final dir = _vaultPath ?? existing?.workingDir;
+      final project = existing?.project ?? composeProject;
+      if (dir == null) throw Exception("Vault path not set");
+      final result = await Process.run(
+        'docker',
+        ['compose', '-p', project, '-f', 'docker-compose.yml', 'down'],
+        workingDirectory: dir,
+      );
       if (result.exitCode != 0) {
         print("Error stopping Docker: ${result.stderr}");
       } else {
@@ -3114,15 +3862,33 @@ void main() async {
     }
   }
 
-    Future<void> startStack() async {
+    Future<void> startStack({bool build = false}) async {
+    final existing = await findExistingStack();
+    if (existing != null) {
+      _vaultPath = existing.workingDir;
+      await rememberVault(existing.workingDir);
+      if (existing.running && await gatewayUp()) {
+        print("GupTik stack already running at ${existing.workingDir} — not creating another.");
+        return;
+      }
+    }
     if (_vaultPath == null) throw Exception("Vault path not set");
+    await rememberVault(_vaultPath!);
+    final project = existing?.project ?? composeProject;
     final shell = Shell(workingDirectory: _vaultPath, environment: Platform.environment, throwOnError: false);
     String dockerCmd = 'docker';
     if (Platform.isLinux || Platform.isMacOS) {
       final which = await shell.run('which docker');
       if (which.first.exitCode == 0) dockerCmd = which.first.stdout.toString().trim();
     }
-    await shell.run('$dockerCmd compose pull');
-    await shell.run('$dockerCmd compose up -d --build --remove-orphans');
+    final up = build ? 'up -d --build --remove-orphans' : 'up -d';
+    await shell.run('$dockerCmd compose -p $project $up');
   }
+}
+
+class GuptikStack {
+  final String workingDir;
+  final String project;
+  final bool running;
+  GuptikStack({required this.workingDir, required this.project, required this.running});
 }

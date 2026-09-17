@@ -1,5 +1,5 @@
 import 'package:flutter/material.dart';
-import 'package:lucide_icons/lucide_icons.dart';
+import 'package:lucide_flutter/lucide_flutter.dart';
 import '../../models/whatsapp/wa_conversation.dart';
 import '../../models/whatsapp/wa_message.dart';
 import '../../services/whatsapp/wa_message_service.dart';

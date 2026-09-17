@@ -3,6 +3,7 @@ import '../../services/external/docker_service.dart';
 import '../home_control/home_control_screen.dart';
 import '../../services/external/postgres_service.dart';
 import 'dart:async';
+import 'dart:io';
 import 'package:shared_preferences/shared_preferences.dart';
 
 class InstallationScreen extends StatefulWidget {
@@ -62,43 +63,70 @@ class _InstallationScreenState extends State<InstallationScreen> {
   Future<void> _startInstallation() async {
     try {
       _addLog("INITIALIZING GUPTIK CORE...");
-      _addLog("Target Vault: ${widget.vaultPath}");
+      final existing = await DockerService.findExistingStack();
+      var vault = widget.vaultPath;
+      if (existing != null) {
+        vault = existing.workingDir;
+        _dockerService.setVaultPath(vault);
+        _addLog(existing.running
+            ? "Existing node already running at $vault — reusing, not creating another stack."
+            : "Existing node found at $vault — attaching.");
+      } else {
+        vault = DockerService.nestNodeDir(widget.vaultPath);
+        _dockerService.setVaultPath(vault);
+        await Directory(vault).create(recursive: true);
+        _addLog("Node folder: $vault");
+      }
+
       final prefs = await SharedPreferences.getInstance();
       await prefs.setBool('is_logged_in', true);
-      await prefs.setString('vault_path', widget.vaultPath);
+      await prefs.setString('vault_path', vault);
       await prefs.setString('user_email', widget.userEmail);
       await prefs.setString('user_password', widget.userPassword);
+      await DockerService.rememberVault(vault);
 
-      // --- STEP 1: DOCKER ---
-      _addLog("Configuring Docker containers...");
-      await _dockerService.autoConfigure(
-        dbPass: widget.userPassword,
-        tunnelToken: widget.cfToken,
-        publicUrl: widget.publicUrl,
-        email: widget.userEmail,
-        userPassword: widget.userPassword,
-      );
+      if (existing != null && (existing.running || await DockerService.gatewayUp())) {
+        _addLog("Skipping Docker create — stack is live.");
+        setState(() => _step1Docker = true);
+      } else if (existing != null) {
+        _addLog("Starting existing Docker stack...");
+        await _dockerService.startStack(build: false);
+        setState(() => _step1Docker = true);
+        _addLog("✓ Existing stack is up.");
+      } else {
+        _addLog("Configuring Docker containers...");
+        await _dockerService.autoConfigure(
+          dbPass: widget.userPassword,
+          tunnelToken: widget.cfToken,
+          publicUrl: widget.publicUrl,
+          email: widget.userEmail,
+          userPassword: widget.userPassword,
+        );
+        _addLog("Starting Docker Stack (first install)...");
+        await _dockerService.startStack(build: true);
+        setState(() => _step1Docker = true);
+        _addLog("✓ Docker Services are Active.");
+      }
 
-      _addLog("Starting Docker Stack (This may take a moment)...");
-      await _dockerService.startStack();
+      _addLog("Connecting Local Postgres...");
+      try {
+        await PostgresService().connectExistingUser(
+          email: widget.userEmail,
+          userPassword: widget.userPassword,
+        );
+      } catch (_) {
+        await PostgresService().initializeUserDatabase(
+          email: widget.userEmail,
+          userPassword: widget.userPassword,
+        );
+      }
 
-      setState(() => _step1Docker = true);
-      _addLog("✓ Docker Services are Active.");
-
-      // --- STEP 2: DATABASE ---
-      _addLog("Initializing Local Postgres User...");
-      await PostgresService().initializeUserDatabase(
-        email: widget.userEmail,
-        userPassword: widget.userPassword,
-      );
-      
       setState(() {
         _step2Db = true;
-        _finished = true; // 🚀 Finish immediately after DB setup!
+        _finished = true;
       });
-      _addLog("✓ Database Tables Created.");
-      _addLog("✓ SYSTEM INSTALLATION COMPLETE.");
-
+      _addLog("✓ Database ready.");
+      _addLog("✓ SYSTEM READY.");
     } catch (e) {
       _addLog("CRITICAL ERROR: $e");
     }

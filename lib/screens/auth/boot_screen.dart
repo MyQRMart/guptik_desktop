@@ -5,6 +5,8 @@ import '../../services/external/postgres_service.dart';
 import '../home_control/home_control_screen.dart';
 import 'login_signup_screen.dart';
 import '../../services/supabase_service.dart';
+import '../../services/node/node_presence_service.dart';
+import '../../services/updates/update_service.dart';
 
 class BootScreen extends StatefulWidget {
   const BootScreen({super.key});
@@ -14,6 +16,11 @@ class BootScreen extends StatefulWidget {
 }
 
 class _BootScreenState extends State<BootScreen> {
+  String _status = 'Waking up GupTik Core...';
+
+  void _set(String s) {
+    if (mounted) setState(() => _status = s);
+  }
   @override
   void initState() {
     super.initState();
@@ -23,9 +30,18 @@ class _BootScreenState extends State<BootScreen> {
   Future<void> _initializeSystem() async {
     try {
       final prefs = await SharedPreferences.getInstance();
-      final vaultPath = prefs.getString('vault_path');
+      var vaultPath = prefs.getString('vault_path');
       final email = prefs.getString('user_email');
       final password = prefs.getString('user_password');
+
+      if (vaultPath == null) {
+        final existing = await DockerService.findExistingStack();
+        if (existing != null) {
+          vaultPath = existing.workingDir;
+          await prefs.setString('vault_path', vaultPath);
+          await DockerService.rememberVault(vaultPath);
+        }
+      }
 
       if (vaultPath == null || email == null || password == null) {
         throw Exception("Corrupt session data");
@@ -58,6 +74,17 @@ class _BootScreenState extends State<BootScreen> {
       }
 
       if (!connected) throw Exception("Could not reach local database.");
+
+      if (UpdateService.nodeNeedsUpdate(vaultPath)) {
+        _set('Updating node (no reinstall)...');
+        try {
+          await DockerService().applyNodeUpdate();
+        } catch (e) {
+          print('Node update: $e');
+        }
+      }
+
+      await NodePresenceService.instance.start();
 
       // 4. Go to Home Control (which now has the Dashboard as first tab)
       if (mounted) {
@@ -98,12 +125,13 @@ MaterialPageRoute(builder: (_) => const LoginSignupScreen()),
             const SizedBox(height: 30),
             const CircularProgressIndicator(color: Colors.cyanAccent),
             const SizedBox(height: 20),
-            const Text(
-              "Waking up Guptik Core...",
-              style: TextStyle(
+            Text(
+              _status,
+              style: const TextStyle(
                 color: Colors.cyanAccent,
                 fontFamily: 'Courier',
-                letterSpacing: 2,
+                letterSpacing: 1,
+                fontSize: 12,
               ),
             ),
           ],

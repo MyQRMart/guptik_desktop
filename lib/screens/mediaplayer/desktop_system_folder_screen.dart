@@ -3,6 +3,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter_secure_storage/flutter_secure_storage.dart';
 import 'package:postgres/postgres.dart';
 import 'package:supabase_flutter/supabase_flutter.dart'; // 🚀 Added to fetch global reposts
+import 'package:shared_preferences/shared_preferences.dart';
 import '../../models/mediaplayer/player_video_model.dart';
 import '../../widgets/mediaplayer/player_video_card.dart';
 import '../../services/external/postgres_service.dart';
@@ -27,8 +28,18 @@ class DesktopSystemFolderScreen extends StatefulWidget {
 
 class _DesktopSystemFolderScreenState extends State<DesktopSystemFolderScreen> {
   List<PlayerVideo> _videos = [];
+  List<File> _vaultFiles = [];
   bool _isLoading = true;
   String? _publicUrl;
+
+  Future<Directory?> _vaultFilesDir() async {
+    final prefs = await SharedPreferences.getInstance();
+    var stored = prefs.getString('vault_path');
+    if (stored == null || stored.isEmpty) {
+      stored = Platform.isWindows ? r'C:\GuptikVault' : '${Platform.environment['HOME']}/GuptikVault';
+    }
+    return Directory('$stored${Platform.pathSeparator}vault_files');
+  }
 
   @override
   void initState() {
@@ -50,6 +61,23 @@ class _DesktopSystemFolderScreenState extends State<DesktopSystemFolderScreen> {
               : 'https://$_publicUrl';
 
       final List<PlayerVideo> loadedVideos = [];
+
+      if (widget.folderType == 'vault_sys') {
+        final prefsPath = await _vaultFilesDir();
+        if (prefsPath != null && await prefsPath.exists()) {
+          final files = prefsPath.listSync().whereType<File>().toList()
+            ..sort((a, b) => b.lastModifiedSync().compareTo(a.lastModifiedSync()));
+          if (mounted) {
+            setState(() {
+              _vaultFiles = files;
+              _isLoading = false;
+            });
+          }
+          return;
+        }
+        if (mounted) setState(() => _isLoading = false);
+        return;
+      }
 
       // 🚀 THE FIX: Reposts must be fetched from Supabase, not local Postgres!
       // Since reposts belong to other creators, your local mp_videos table doesn't have the files.
@@ -231,7 +259,37 @@ class _DesktopSystemFolderScreenState extends State<DesktopSystemFolderScreen> {
       ),
       body: _isLoading
           ? Center(child: CircularProgressIndicator(color: widget.folderColor))
-          : _videos.isEmpty
+          : widget.folderType == 'vault_sys'
+              ? (_vaultFiles.isEmpty
+                  ? Center(
+                      child: Column(
+                        mainAxisAlignment: MainAxisAlignment.center,
+                        children: [
+                          Icon(widget.folderIcon, color: Colors.white24, size: 64),
+                          const SizedBox(height: 16),
+                          Text("This folder is empty.", style: TextStyle(color: Colors.grey.shade500, fontSize: 18)),
+                        ],
+                      ),
+                    )
+                  : ListView.builder(
+                      padding: const EdgeInsets.all(24),
+                      itemCount: _vaultFiles.length,
+                      itemBuilder: (context, i) {
+                        final f = _vaultFiles[i];
+                        final name = f.path.split(Platform.pathSeparator).last;
+                        return ListTile(
+                          leading: const Icon(Icons.insert_drive_file, color: Colors.orangeAccent),
+                          title: Text(name, style: const TextStyle(color: Colors.white)),
+                          subtitle: Text('${(f.lengthSync() / 1024).toStringAsFixed(1)} KB', style: TextStyle(color: Colors.grey.shade500)),
+                          onTap: () async {
+                            if (Platform.isLinux) await Process.run('xdg-open', [f.path]);
+                            else if (Platform.isMacOS) await Process.run('open', [f.path]);
+                            else if (Platform.isWindows) await Process.run('explorer', [f.path]);
+                          },
+                        );
+                      },
+                    ))
+              : _videos.isEmpty
               ? Center(
                   child: Column(
                     mainAxisAlignment: MainAxisAlignment.center,

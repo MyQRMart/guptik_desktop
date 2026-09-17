@@ -285,18 +285,29 @@ class _DesktopMediaPlayerScreenState extends State<DesktopMediaPlayerScreen> wit
     
     double percent = durationSecs > 0 ? (positionSecs / durationSecs) * 100 : 0.0;
     
-    _apiService.logWatchHistory(
-      widget.video.videoId, 
-      widget.video.creatorUid, 
-      positionSecs, 
-      percent, 
-      'desktop_session_${DateTime.now().millisecondsSinceEpoch}'
-    );
-
+    _logHistoryToMyNode(positionSecs, percent);
     WatchHistoryLocalStore.recordWatch(widget.video, DateTime.now());
 
     player.dispose();
     super.dispose();
+  }
+
+  Future<void> _logHistoryToMyNode(int positionSecs, double percent) async {
+    try {
+      final mine = await DockerService().getActiveTunnelUrl();
+      final raw = (mine.isEmpty || mine.startsWith('your-tunnel'))
+          ? 'localhost:55000'
+          : mine;
+      await PlayerApiService(gatewayUrl: DockerService.normalizeGatewayUrl(raw)).logWatchHistory(
+        widget.video.videoId,
+        widget.video.creatorUid,
+        positionSecs,
+        percent,
+        'desktop_session_${DateTime.now().millisecondsSinceEpoch}',
+      );
+    } catch (e) {
+      debugPrint('Own-node history log failed: $e');
+    }
   }
 
   void _handleReaction(String type) async {

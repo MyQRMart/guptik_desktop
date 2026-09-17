@@ -63,7 +63,7 @@ class SupabaseService {
         'user_id': userId,
         'device_model': modelName,
         'status': 'online',
-        'last_active_at': DateTime.now().toIso8601String(),
+        'last_active_at': DateTime.now().toUtc().toIso8601String(),
       }, onConflict: 'device_id');
       
       print("Device registered with Supabase: $deviceId");

@@ -5,11 +5,12 @@ import 'package:flutter/material.dart';
 import 'package:guptik_desktop/models/whatsapp/wa_message.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
 import 'package:http/http.dart' as http;
-// THIS IS THE MISSING IMPORT
-import 'package:path_provider/path_provider.dart'; 
+import 'package:path_provider/path_provider.dart';
+import 'package:guptik_desktop/services/node/node_table_client.dart'; 
 
 class MessageService {
   final SupabaseClient _supabase = Supabase.instance.client;
+  final _store = NodeTableClient();
   
   // Cache for token to avoid fetching on every image load
   String? _cachedAccessToken;
@@ -96,16 +97,15 @@ class MessageService {
     bool ascending = true,
   }) async {
     try {
-      final response = await _supabase
-          .from('wa_messages')
-          .select()
-          .eq('conversation_id', conversationId)
-          .order('timestamp', ascending: ascending)
-          .limit(limit);
+      final response = await _store.select(
+        'wa_messages',
+        eq: {'conversation_id': conversationId},
+        order: 'timestamp',
+        ascending: ascending,
+        limit: limit,
+      );
 
-      return (response as List)
-          .map((json) => Message.fromJson(json))
-          .toList();
+      return response.map((json) => Message.fromJson(json)).toList();
     } catch (e) {
       debugPrint('Error getting messages: $e');
       throw Exception('Failed to fetch messages: $e');
@@ -130,9 +130,7 @@ class MessageService {
       final now = DateTime.now().toUtc();
       
       // 1. Insert message to database
-      final message = await _supabase
-          .from('wa_messages')
-          .insert({
+      final message = await _store.insert('wa_messages', {
             'conversation_id': conversationId,
             'message_id': messageId,
             'content': content,
@@ -142,9 +140,7 @@ class MessageService {
             'timestamp': now.toIso8601String(),
             'created_at': now.toIso8601String(),
             'updated_at': now.toIso8601String(),
-          })
-          .select()
-          .single();
+          });
 
       debugPrint('Message saved to database with ID: $messageId');
 
@@ -164,14 +160,15 @@ class MessageService {
       // 3. Update status based on WhatsApp result
       final updatedStatus = whatsappSent ? 'sent' : 'failed';
       
-      await _supabase
-          .from('wa_messages')
-          .update({
-            'status': updatedStatus,
-            'status_timestamp': now.toIso8601String(),
-            'updated_at': now.toIso8601String(),
-          })
-          .eq('message_id', messageId);
+      await _store.update(
+        'wa_messages',
+        eq: {'message_id': messageId},
+        set: {
+          'status': updatedStatus,
+          'status_timestamp': now.toIso8601String(),
+          'updated_at': now.toIso8601String(),
+        },
+      );
 
       // 4. Update conversation last message
       await _updateConversationLastMessage(conversationId, content);
@@ -338,9 +335,7 @@ class MessageService {
       }
 
       // 1. Insert to database
-      final message = await _supabase
-          .from('wa_messages')
-          .insert({
+      final message = await _store.insert('wa_messages', {
             'conversation_id': conversationId,
             'message_id': messageId,
             'content': mediaUrl,
@@ -351,9 +346,7 @@ class MessageService {
             'created_at': now.toIso8601String(),
             'updated_at': now.toIso8601String(),
             'media_info': finalMediaInfo,
-          })
-          .select()
-          .single();
+          });
 
       debugPrint('Media message saved to database');
 
@@ -374,14 +367,15 @@ class MessageService {
       // 3. Update status
       final updatedStatus = whatsappSent ? 'sent' : 'failed';
       
-      await _supabase
-          .from('wa_messages')
-          .update({
-            'status': updatedStatus,
-            'status_timestamp': now.toIso8601String(),
-            'updated_at': now.toIso8601String(),
-          })
-          .eq('message_id', messageId);
+      await _store.update(
+        'wa_messages',
+        eq: {'message_id': messageId},
+        set: {
+          'status': updatedStatus,
+          'status_timestamp': now.toIso8601String(),
+          'updated_at': now.toIso8601String(),
+        },
+      );
 
       // 4. Update conversation
       final displayMessage = messageType == 'image' ? '📸 Photo' : 
@@ -477,15 +471,16 @@ class MessageService {
     String lastMessage,
   ) async {
     try {
-      await _supabase
-          .from('wa_conversations')
-          .update({
-            'last_message': lastMessage,
-            'last_message_time': DateTime.now().toIso8601String(),
-            'is_unread': false,
-            'updated_at': DateTime.now().toUtc().toIso8601String(),
-          })
-          .eq('id', conversationId);
+      await _store.update(
+        'wa_conversations',
+        eq: {'id': conversationId},
+        set: {
+          'last_message': lastMessage,
+          'last_message_time': DateTime.now().toIso8601String(),
+          'is_unread': false,
+          'updated_at': DateTime.now().toUtc().toIso8601String(),
+        },
+      );
     } catch (e) {
       debugPrint('Error updating conversation: $e');
     }
@@ -494,15 +489,18 @@ class MessageService {
   // Mark messages as read
   Future<void> markMessagesAsRead(String conversationId) async {
     try {
-      await _supabase
-          .from('wa_messages')
-          .update({
-            'status': 'read',
-            'updated_at': DateTime.now().toUtc().toIso8601String(),
-          })
-          .eq('conversation_id', conversationId)
-          .eq('direction', 'incoming')
-          .eq('status', 'delivered');
+      await _store.update(
+        'wa_messages',
+        eq: {
+          'conversation_id': conversationId,
+          'direction': 'incoming',
+          'status': 'delivered',
+        },
+        set: {
+          'status': 'read',
+          'updated_at': DateTime.now().toUtc().toIso8601String(),
+        },
+      );
     } catch (e) {
       debugPrint('Error marking messages as read: $e');
     }
@@ -516,10 +514,7 @@ class MessageService {
   // Delete message
   Future<void> deleteMessage(String messageId) async {
     try {
-      await _supabase
-          .from('wa_messages')
-          .delete()
-          .eq('message_id', messageId);
+      await _store.delete('wa_messages', {'message_id': messageId});
     } catch (e) {
       debugPrint('Error deleting message: $e');
       throw Exception('Failed to delete message: $e');
@@ -529,12 +524,14 @@ class MessageService {
   // Get unread message count
   Future<int> getUnreadCount(String conversationId) async {
     try {
-      final response = await _supabase
-          .from('wa_messages')
-          .select('id')
-          .eq('conversation_id', conversationId)
-          .eq('direction', 'incoming')
-          .eq('status', 'delivered');
+      final response = await _store.select(
+        'wa_messages',
+        eq: {
+          'conversation_id': conversationId,
+          'direction': 'incoming',
+          'status': 'delivered',
+        },
+      );
 
       return response.length;
     } catch (e) {

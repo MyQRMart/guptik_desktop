@@ -1,5 +1,5 @@
 import 'package:flutter/material.dart';
-import 'package:lucide_icons/lucide_icons.dart';
+import 'package:lucide_flutter/lucide_flutter.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'package:window_manager/window_manager.dart';
 import '../../models/home.dart';
@@ -17,7 +17,10 @@ import '../trust_me/trust_me_screen.dart';
 import '../facebook/meta_dashboard.dart';
 import '../whatsapp/whatsapp_screen.dart';
 import '../datatables/datatables_screen.dart';
+import '../contacts/desktop_contacts_screen.dart';
 import '../../services/external/postgres_service.dart';
+import '../../services/node/node_presence_service.dart';
+import '../../theme/app_chrome.dart';
 import 'dart:io';
 
 class HomeControlScreen extends StatefulWidget {
@@ -39,8 +42,9 @@ class _HomeControlScreenState extends State<HomeControlScreen> with SingleTicker
     super.initState();
     _supabaseService = SupabaseService();
     _homesFuture = _supabaseService.getHomes();
-    _tabController = TabController(length: 10, vsync: this);
+    _tabController = TabController(length: 11, vsync: this);
     _loadGatewayUrl();
+    NodePresenceService.instance.start();
   }
 
   Future<void> _loadGatewayUrl() async {
@@ -67,6 +71,20 @@ class _HomeControlScreenState extends State<HomeControlScreen> with SingleTicker
   void dispose() {
     _tabController.dispose();
     super.dispose();
+  }
+
+  Tab _modTab(IconData icon, String label) {
+    return Tab(
+      height: Chrome.tabBarH,
+      child: Row(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          Icon(icon, size: 14),
+          const SizedBox(width: 6),
+          Text(label),
+        ],
+      ),
+    );
   }
 
   void _showAddRoomDialog(String homeId) {
@@ -165,68 +183,53 @@ class _HomeControlScreenState extends State<HomeControlScreen> with SingleTicker
   @override
   Widget build(BuildContext context) {
     return Scaffold(
-      appBar: AppBar(
-        backgroundColor: const Color(0xFF1E293B),
-        title: Row(
-          children: [
-            Image.asset('lib/assets/logonobg.png', height: 30),
-            const SizedBox(width: 10),
-            const Text('Guptik Desktop', style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold)),
-            const SizedBox(width: 10),
-            const Text('v0.1.0', style: TextStyle(fontSize: 12, color: Colors.grey)),
-          ],
-        ),
-        actions: [
-          IconButton(
-            icon: const Icon(Icons.minimize, color: Colors.white),
-            onPressed: () => windowManager.minimize(),
-          ),
-          IconButton(
-            icon: const Icon(Icons.check_box_outline_blank, color: Colors.white),
-            onPressed: () async {
-              bool isMaximized = await windowManager.isMaximized();
-              if (isMaximized) {
-                windowManager.unmaximize();
-              } else {
-                windowManager.maximize();
-              }
-            },
-          ),
-          IconButton(
-            icon: const Icon(Icons.close, color: Colors.white),
-            onPressed: () => windowManager.close(),
-          ),
-        ],
-        bottom: TabBar(
-          controller: _tabController,
-          isScrollable: true,
-          tabs: const [
-            Tab(icon: Icon(LucideIcons.grid), text: 'Dashboard'),
-            Tab(icon: Icon(LucideIcons.home), text: 'Home Control'),
-            Tab(icon: Icon(LucideIcons.settings), text: 'Settings'),
-            Tab(icon: Icon(LucideIcons.bot), text: 'Guptik AI'),
-            Tab(icon: Icon(LucideIcons.shield), text: 'Vault'),
-            Tab(icon: Icon(LucideIcons.play), text: 'Media Player'),
-            Tab(icon: Icon(LucideIcons.lock), text: 'Trust Me'),
-            Tab(icon: Icon(LucideIcons.facebook), text: 'Meta Manager'),
-            Tab(icon: Icon(LucideIcons.messageCircle), text: 'WhatsApp'),
-            Tab(icon: Icon(LucideIcons.table, size: 24, color: Colors.cyanAccent), text: 'Data Tables'),
-          ],
-        ),
-      ),
-      body: TabBarView(
-        controller: _tabController,
+      backgroundColor: Chrome.editor,
+      body: Column(
         children: [
-          const DashboardHomeScreen(),
-          _buildHomeContentWithSidebar(),
-          const SettingsScreen(),
-          const GuptikScreen(),
-          const VaultScreen(),
-          DesktopMediaHomeScreen(gatewayUrl: _gatewayUrl),
-          const TrustMeScreen(),
-          const MetaDashboard(),
-          const WhatsAppScreen(),
-          const DatatablesScreen(),
+          Container(
+            height: Chrome.tabBarH,
+            decoration: const BoxDecoration(
+              color: Chrome.tabBar,
+              border: Border(bottom: BorderSide(color: Chrome.border)),
+            ),
+            child: TabBar(
+              controller: _tabController,
+              isScrollable: true,
+              tabAlignment: TabAlignment.start,
+              labelPadding: const EdgeInsets.symmetric(horizontal: 10),
+              tabs: [
+                _modTab(LucideIcons.layoutGrid, 'Dashboard'),
+                _modTab(LucideIcons.house, 'Home'),
+                _modTab(LucideIcons.settings, 'Settings'),
+                _modTab(LucideIcons.bot, 'AI'),
+                _modTab(LucideIcons.shield, 'Vault'),
+                _modTab(LucideIcons.play, 'Media'),
+                _modTab(LucideIcons.lock, 'Trust Me'),
+                _modTab(Icons.facebook, 'Meta'),
+                _modTab(LucideIcons.messageCircle, 'WhatsApp'),
+                _modTab(LucideIcons.users, 'Contacts'),
+                _modTab(LucideIcons.table, 'Data'),
+              ],
+            ),
+          ),
+          Expanded(
+            child: TabBarView(
+              controller: _tabController,
+              children: [
+                const DashboardHomeScreen(),
+                _buildHomeContentWithSidebar(),
+                const SettingsScreen(),
+                const GuptikScreen(),
+                const VaultScreen(),
+                DesktopMediaHomeScreen(gatewayUrl: _gatewayUrl),
+                const TrustMeScreen(),
+                const MetaDashboard(),
+                const WhatsAppScreen(),
+                const DesktopContactsScreen(),
+                const DatatablesScreen(),
+              ],
+            ),
+          ),
         ],
       ),
     );

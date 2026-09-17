@@ -1,8 +1,10 @@
 import 'package:flutter/material.dart';
-import 'package:lucide_icons/lucide_icons.dart';
+import 'package:lucide_flutter/lucide_flutter.dart';
 import '../../services/facebook/meta_service.dart';
+import '../../services/node/social_reply_service.dart';
 import '../../models/facebook/meta_chat_model.dart';
 import '../../models/facebook/meta_content_model.dart';
+import '../../theme/app_chrome.dart';
 import 'dart:io';
 import 'package:file_picker/file_picker.dart';
 import 'package:video_player/video_player.dart';
@@ -26,19 +28,19 @@ class _MetaDashboardState extends State<MetaDashboard> with SingleTickerProvider
   @override
   Widget build(BuildContext context) {
     return Scaffold(
-      backgroundColor: const Color(0xFF0F172A),
+      backgroundColor: Chrome.editor,
       appBar: PreferredSize(
-        preferredSize: const Size.fromHeight(60),
+        preferredSize: const Size.fromHeight(35),
         child: Container(
-          color: const Color(0xFF1E293B),
+          height: Chrome.tabBarH,
+          color: Chrome.tabBar,
           child: TabBar(
             controller: _tabController,
-            indicatorColor: Colors.cyanAccent,
-            labelColor: Colors.cyanAccent,
-            unselectedLabelColor: Colors.grey,
-            tabs: const [
-              Tab(icon: Icon(LucideIcons.grid), text: "Content"),
-              Tab(icon: Icon(LucideIcons.messageCircle), text: "Inbox"),
+            tabAlignment: TabAlignment.start,
+            isScrollable: true,
+            tabs: [
+              Tab(height: Chrome.tabBarH, child: Row(mainAxisSize: MainAxisSize.min, children: const [Icon(LucideIcons.layoutGrid, size: 14), SizedBox(width: 6), Text('Content')])),
+              Tab(height: Chrome.tabBarH, child: Row(mainAxisSize: MainAxisSize.min, children: const [Icon(LucideIcons.messageCircle, size: 14), SizedBox(width: 6), Text('Inbox')])),
             ],
           ),
         ),
@@ -340,7 +342,7 @@ class _InboxTabState extends State<_InboxTab> {
                 leading: CircleAvatar(backgroundColor: Colors.grey[800], child: Text(chat.senderName[0], style: const TextStyle(color: Colors.cyanAccent))),
                 title: Text(chat.senderName, style: const TextStyle(color: Colors.white)),
                 subtitle: Text(chat.lastMessage, maxLines: 1, style: const TextStyle(color: Colors.grey)),
-                trailing: chat.platform == SocialPlatform.facebook ? const Icon(LucideIcons.facebook, size: 14, color: Colors.blue) : const Icon(LucideIcons.instagram, size: 14, color: Colors.pink),
+                trailing: chat.platform == SocialPlatform.facebook ? const Icon(Icons.facebook, size: 14, color: Colors.blue) : const Icon(Icons.camera_alt, size: 14, color: Colors.pink),
                 onTap: () => setState(() => _selectedChat = chat),
               );
             },
@@ -392,7 +394,33 @@ class _ChatDetailViewState extends State<_ChatDetailView> {
     final text = _ctrl.text;
     _ctrl.clear();
     setState(() => _msgs.insert(0, {'message': text, 'is_from_me': true, 'created_time': DateTime.now().toIso8601String()}));
-    await _meta.sendMessage(widget.chat.id, text);
+    await _meta.sendMessage(widget.chat.id, text, participantId: widget.chat.participantId);
+  }
+
+  Future<void> _draftLocal() async {
+    String inbound = '';
+    for (final m in _msgs) {
+      if (m['is_from_me'] != true) {
+        inbound = m['message']?.toString() ?? '';
+        if (inbound.isNotEmpty) break;
+      }
+    }
+    if (inbound.isEmpty) return;
+    try {
+      final draft = await SocialReplyService().draft(
+        platform: widget.chat.platform == SocialPlatform.instagram ? 'instagram' : 'facebook',
+        kind: 'message',
+        text: inbound,
+      );
+      if (!mounted) return;
+      if (draft == null) {
+        ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Turn on this PC’s AI model first.')));
+        return;
+      }
+      _ctrl.text = draft;
+    } catch (e) {
+      if (mounted) ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('$e')));
+    }
   }
 
   @override
@@ -445,6 +473,7 @@ class _ChatDetailViewState extends State<_ChatDetailView> {
                 ),
               ),
               const SizedBox(width: 8),
+              IconButton(icon: const Icon(Icons.auto_awesome, color: Colors.cyanAccent), onPressed: _draftLocal),
               IconButton(icon: const Icon(Icons.send, color: Colors.cyanAccent), onPressed: _send),
             ],
           ),

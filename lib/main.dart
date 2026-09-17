@@ -1,3 +1,4 @@
+import 'dart:io';
 import 'package:flutter/material.dart';
 import 'package:google_fonts/google_fonts.dart';
 import 'package:media_kit/media_kit.dart';
@@ -7,13 +8,17 @@ import 'screens/auth/login_signup_screen.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'screens/auth/boot_screen.dart';
 import 'package:video_player_win/video_player_win.dart';
+import 'theme/app_chrome.dart';
+import 'widgets/window_header.dart';
 
 
 void main() async {
   WidgetsFlutterBinding.ensureInitialized();
   MediaKit.ensureInitialized();
 
-  WindowsVideoPlayer.registerWith();
+  if (Platform.isWindows) {
+    WindowsVideoPlayer.registerWith();
+  }
 
   // 1. Initialize Window Manager (for Desktop)
   await windowManager.ensureInitialized();
@@ -23,9 +28,13 @@ void main() async {
     backgroundColor: Colors.transparent,
     skipTaskbar: false,
     titleBarStyle: TitleBarStyle.hidden,
+    title: 'GupTik',
   );
 
   windowManager.waitUntilReadyToShow(windowOptions, () async {
+    try {
+      await windowManager.setIcon('lib/assets/logonobg.png');
+    } catch (_) {}
     await windowManager.show();
     await windowManager.focus();
   });
@@ -63,15 +72,21 @@ class MyApp extends StatelessWidget {
     return MaterialApp(
       debugShowCheckedModeBanner: false,
 
-      title: 'Guptik Desktop',
-      theme: ThemeData(
-        brightness: Brightness.dark,
-        scaffoldBackgroundColor: const Color(0xFF0F172A),
-        textTheme: GoogleFonts.jetBrainsMonoTextTheme(
-          Theme.of(context).textTheme,
-        ).apply(bodyColor: Colors.white, displayColor: Colors.white),
-        useMaterial3: true,
+      title: 'GupTik',
+      theme: Chrome.dark(
+        GoogleFonts.jetBrainsMonoTextTheme(Theme.of(context).textTheme),
       ),
+      builder: (context, child) {
+        return Directionality(
+          textDirection: TextDirection.ltr,
+          child: Column(
+            children: [
+              const WindowHeader(title: 'GupTik'),
+              Expanded(child: child ?? const SizedBox.shrink()),
+            ],
+          ),
+        );
+      },
       home: startScreen,
     );
   }

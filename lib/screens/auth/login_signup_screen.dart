@@ -4,7 +4,13 @@ import 'package:device_info_plus/device_info_plus.dart';
 import 'dart:io';
 import 'dart:math';
 import 'package:guptik_desktop/services/supabase_service.dart';
+import 'package:guptik_desktop/services/node/node_presence_service.dart';
+import 'package:shared_preferences/shared_preferences.dart';
 import '../onboarding/storage_selection_screen.dart';
+import '../onboarding/installation_screen.dart';
+import '../home_control/home_control_screen.dart';
+import '../../services/external/docker_service.dart';
+import '../../services/external/postgres_service.dart';
 
 class LoginSignupScreen extends StatefulWidget {
   const LoginSignupScreen({super.key});
@@ -28,7 +34,15 @@ class _LoginSignupScreenState extends State<LoginSignupScreen> {
   @override
   void initState() {
     super.initState();
-    _deviceId = _generateRandomId(12);
+    _loadDeviceId();
+  }
+
+  Future<void> _loadDeviceId() async {
+    final prefs = await SharedPreferences.getInstance();
+    var id = prefs.getString('desktop_device_id');
+    id ??= _generateRandomId(12);
+    await prefs.setString('desktop_device_id', id);
+    if (mounted) setState(() => _deviceId = id);
   }
 
   String _generateRandomId(int length) {
@@ -68,6 +82,7 @@ class _LoginSignupScreenState extends State<LoginSignupScreen> {
         userId: res.user!.id,
         modelName: deviceModel,
       );
+      await NodePresenceService.instance.start();
 
       // 3. Trigger Cloudflare Tunnel Creation
       setState(() => _statusMessage = "Requesting Secure Tunnel...");
@@ -75,27 +90,22 @@ class _LoginSignupScreenState extends State<LoginSignupScreen> {
 
       // 4. Poll for Tunnel Token (Wait for n8n to finish)
       setState(() => _statusMessage = "Initializing Connection (this may take 10-20s)...");
-      final tunnelData = await _waitForTunnelToken(_deviceId!);
+      var tunnelData = await _waitForTunnelToken(_deviceId!);
 
       if (tunnelData == null) {
-        throw Exception("Connection timed out. Cloudflare Tunnel could not be provisioned.");
+        final lan = await NodePresenceService.lanUrl();
+        tunnelData = {'cf_tunnel_token': '', 'public_url': lan};
+        setState(() => _statusMessage = "Tunnel pending — using LAN $lan");
       }
+      final tunnel = tunnelData!;
 
-      // 5. Success -> Navigate to Storage Selection
-      if (mounted) {
-        Navigator.pushReplacement(
-          context,
-          MaterialPageRoute(
-            builder: (_) => StorageSelectionScreen(
-              deviceId: _deviceId!,
-              userEmail: email,
-              userPassword: password,
-              cfToken: tunnelData['cf_tunnel_token'], 
-              publicUrl: tunnelData['public_url'],    
-            ),
-          ),
-        );
-      }
+      // 5. Reuse existing node if this PC already has one
+      await _openNode(
+        email: email,
+        password: password,
+        cfToken: tunnel['cf_tunnel_token']?.toString() ?? '',
+        publicUrl: tunnel['public_url']?.toString() ?? '',
+      );
     } catch (e) {
       setState(() => _errorMessage = e.toString().replaceAll('Exception:', ''));
     } finally {
@@ -145,6 +155,7 @@ class _LoginSignupScreenState extends State<LoginSignupScreen> {
         userId: res.user!.id,
         modelName: deviceModel,
       );
+      await NodePresenceService.instance.start();
 
       // 3. Trigger Cloudflare Tunnel Creation
       setState(() => _statusMessage = "Requesting Secure Tunnel...");
@@ -152,32 +163,73 @@ class _LoginSignupScreenState extends State<LoginSignupScreen> {
 
       // 4. Poll for Tunnel Token (Wait for n8n to finish)
       setState(() => _statusMessage = "Initializing Connection (this may take 10-20s)...");
-      final tunnelData = await _waitForTunnelToken(_deviceId!);
+      var tunnelData = await _waitForTunnelToken(_deviceId!);
 
       if (tunnelData == null) {
-        throw Exception("Connection timed out. Cloudflare Tunnel could not be provisioned.");
+        final lan = await NodePresenceService.lanUrl();
+        tunnelData = {'cf_tunnel_token': '', 'public_url': lan};
+        setState(() => _statusMessage = "Tunnel pending — using LAN $lan");
       }
+      final tunnel = tunnelData!;
 
-      // 5. Success -> Navigate to Storage Selection
-      if (mounted) {
-        Navigator.pushReplacement(
-          context,
-          MaterialPageRoute(
-            builder: (_) => StorageSelectionScreen(
-              deviceId: _deviceId!,
-              userEmail: email,
-              userPassword: password,
-              cfToken: tunnelData['cf_tunnel_token'], 
-              publicUrl: tunnelData['public_url'],    
-            ),
-          ),
-        );
-      }
+      // 5. Reuse existing node if this PC already has one
+      await _openNode(
+        email: email,
+        password: password,
+        cfToken: tunnel['cf_tunnel_token']?.toString() ?? '',
+        publicUrl: tunnel['public_url']?.toString() ?? '',
+      );
     } catch (e) {
       setState(() => _errorMessage = e.toString().replaceAll('Exception:', ''));
     } finally {
       if (mounted) setState(() => _isLoading = false);
     }
+  }
+
+  Future<void> _openNode({
+    required String email,
+    required String password,
+    required String cfToken,
+    required String publicUrl,
+  }) async {
+    final existing = await DockerService.findExistingStack();
+    if (existing != null) {
+      setState(() => _statusMessage = existing.running
+          ? "Found running GupTik node — reconnecting..."
+          : "Found existing GupTik node — attaching...");
+      final prefs = await SharedPreferences.getInstance();
+      await prefs.setBool('is_logged_in', true);
+      await prefs.setString('vault_path', existing.workingDir);
+      await prefs.setString('user_email', email);
+      await prefs.setString('user_password', password);
+      await DockerService.rememberVault(existing.workingDir);
+      DockerService().setVaultPath(existing.workingDir);
+      if (!existing.running || !await DockerService.gatewayUp()) {
+        await DockerService().startStack(build: false);
+      }
+      try {
+        await PostgresService().connectExistingUser(email: email, userPassword: password);
+      } catch (_) {
+        await PostgresService().initializeUserDatabase(email: email, userPassword: password);
+      }
+      if (!mounted) return;
+      Navigator.pushReplacement(context, MaterialPageRoute(builder: (_) => const HomeControlScreen()));
+      return;
+    }
+
+    if (!mounted) return;
+    Navigator.pushReplacement(
+      context,
+      MaterialPageRoute(
+        builder: (_) => StorageSelectionScreen(
+          deviceId: _deviceId!,
+          userEmail: email,
+          userPassword: password,
+          cfToken: cfToken,
+          publicUrl: publicUrl,
+        ),
+      ),
+    );
   }
 
   Future<Map<String, dynamic>?> _waitForTunnelToken(String deviceId) async {

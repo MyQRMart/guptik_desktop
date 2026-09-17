@@ -1,14 +1,18 @@
 import 'dart:io';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
-import 'package:lucide_icons/lucide_icons.dart';
+import 'package:lucide_flutter/lucide_flutter.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'package:supabase_flutter/supabase_flutter.dart'; 
 import '../../models/vault_file.dart';
 import '../../services/supabase_service.dart';
 import '../../services/storage_service.dart';
+import '../../services/external/docker_service.dart';
 import '../../services/external/postgres_service.dart';
-import '../../screens/mediaplayer/desktop_system_folder_screen.dart'; // 🚀 IMPORT ADDED
+import '../../screens/mediaplayer/desktop_system_folder_screen.dart';
+import '../../theme/app_chrome.dart';
+import 'package:file_picker/file_picker.dart';
+import 'package:http/http.dart' as http;
 
 class VaultScreen extends StatefulWidget {
   const VaultScreen({super.key});
@@ -238,7 +242,8 @@ class _VaultScreenState extends State<VaultScreen> {
                                   expiresAt: selectedExpiration,
                                 );
                             final safeName = Uri.encodeComponent(file.fileName);
-                            String link = "https://$_publicUrl/vault/files/$safeName";
+                            final base = DockerService.normalizeGatewayUrl(_publicUrl!);
+                            String link = "$base/vault/files/$safeName";
                             if (!isPublic && token != null) link += "?token=$token";
                             setStateBuilder(() {
                               generatedLink = link;
@@ -301,6 +306,84 @@ class _VaultScreenState extends State<VaultScreen> {
     }
   }
 
+  Future<void> _uploadLocal() async {
+    final result = await FilePicker.platform.pickFiles(allowMultiple: true);
+    if (result == null || _vaultPath == null) return;
+    final destDir = Directory(_vaultPath!);
+    if (!await destDir.exists()) await destDir.create(recursive: true);
+    for (final f in result.files) {
+      if (f.path == null) continue;
+      final name = f.name;
+      await File(f.path!).copy('${destDir.path}${Platform.pathSeparator}$name');
+      try {
+        await PostgresService().saveVaultFileLocal(
+          fileName: name,
+          filePath: '/app/storage/$name',
+          fileSize: f.size,
+          mimeType: _getMimeType(name),
+        );
+      } catch (_) {}
+    }
+    await _refreshFiles();
+  }
+
+  Future<void> _deleteFile(VaultFile file) async {
+    try {
+      final disk = File(file.filePath);
+      if (await disk.exists()) await disk.delete();
+      try {
+        await http.delete(Uri.parse('http://localhost:55000/vault/delete/${Uri.encodeComponent(file.fileName)}'));
+      } catch (_) {}
+      await _refreshFiles();
+    } catch (e) {
+      if (mounted) ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('Delete failed: $e')));
+    }
+  }
+
+  Future<void> _copyTrustMe(VaultFile file) async {
+    final payload = '[vault]/vault/files/${file.fileName}';
+    await Clipboard.setData(ClipboardData(text: payload));
+    if (mounted) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('Trust Me payload copied. Paste in a Trust Me chat.')),
+      );
+    }
+  }
+
+  void _fileMenu(VaultFile file) {
+    showModalBottomSheet(
+      context: context,
+      backgroundColor: const Color(0xFF1E293B),
+      builder: (ctx) => SafeArea(
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            ListTile(
+              leading: const Icon(Icons.open_in_new, color: Colors.cyanAccent),
+              title: const Text('Open', style: TextStyle(color: Colors.white)),
+              onTap: () { Navigator.pop(ctx); _openFile(file.filePath); },
+            ),
+            ListTile(
+              leading: const Icon(Icons.link, color: Colors.cyanAccent),
+              title: const Text('Share link', style: TextStyle(color: Colors.white)),
+              onTap: () { Navigator.pop(ctx); _handleShare(file); },
+            ),
+            ListTile(
+              leading: const Icon(Icons.lock, color: Colors.cyanAccent),
+              title: const Text('Copy Trust Me payload', style: TextStyle(color: Colors.white)),
+              onTap: () { Navigator.pop(ctx); _copyTrustMe(file); },
+            ),
+            ListTile(
+              leading: const Icon(Icons.delete, color: Colors.redAccent),
+              title: const Text('Delete', style: TextStyle(color: Colors.white)),
+              onTap: () { Navigator.pop(ctx); _deleteFile(file); },
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
   // 🚀 ROUTING: Triggers when a System Folder is clicked
   void _openSystemFolder(String folderName) {
     String type = 'drafts';
@@ -345,24 +428,20 @@ class _VaultScreenState extends State<VaultScreen> {
   @override
   Widget build(BuildContext context) {
     return Scaffold(
-      backgroundColor: const Color(0xFF0F172A),
+      backgroundColor: Chrome.editor,
       appBar: AppBar(
-        title: const Text("Central Vault", style: TextStyle(fontWeight: FontWeight.bold)),
-        backgroundColor: const Color(0xFF0F172A),
-        elevation: 0,
+        title: const Text('Vault'),
         actions: [
+          IconButton(icon: const Icon(Icons.upload, size: 16), tooltip: 'Add files', onPressed: _uploadLocal),
           IconButton(
-            icon: const Icon(Icons.folder_open, color: Colors.white),
-            tooltip: "Open in System Explorer",
+            icon: const Icon(Icons.folder_open, size: 16),
+            tooltip: 'Open in explorer',
             onPressed: () {
               if (_vaultPath != null) _openFile(_vaultPath);
             },
           ),
-          IconButton(
-            icon: const Icon(Icons.refresh, color: Colors.white), 
-            onPressed: _refreshFiles
-          ),
-          const SizedBox(width: 16),
+          IconButton(icon: const Icon(Icons.refresh, size: 16), onPressed: _refreshFiles),
+          const SizedBox(width: 8),
         ],
       ),
       body: _isLoading
@@ -486,8 +565,8 @@ class _VaultScreenState extends State<VaultScreen> {
 
     return InkWell(
       onTap: () => _openFile(safePath),
-      onSecondaryTap: () => _handleShare(file),
-      onLongPress: () => _handleShare(file),
+      onSecondaryTap: () => _fileMenu(file),
+      onLongPress: () => _fileMenu(file),
       borderRadius: BorderRadius.circular(12),
       child: Container(
         decoration: BoxDecoration(
