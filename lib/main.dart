@@ -2,7 +2,7 @@ import 'dart:io';
 import 'package:flutter/material.dart';
 import 'package:google_fonts/google_fonts.dart';
 import 'package:media_kit/media_kit.dart';
-import 'package:supabase_flutter/supabase_flutter.dart';
+import 'package:guptik_desktop/services/admin/admin_shim.dart';
 import 'package:window_manager/window_manager.dart';
 import 'screens/auth/login_signup_screen.dart';
 import 'package:shared_preferences/shared_preferences.dart';

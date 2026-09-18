@@ -1,5 +1,5 @@
 import 'package:flutter/material.dart';
-import 'package:supabase_flutter/supabase_flutter.dart';
+import 'package:guptik_desktop/services/admin/admin_shim.dart';
 import 'package:device_info_plus/device_info_plus.dart';
 import 'dart:io';
 import 'dart:math';
@@ -11,6 +11,7 @@ import '../onboarding/installation_screen.dart';
 import '../home_control/home_control_screen.dart';
 import '../../services/external/docker_service.dart';
 import '../../services/external/postgres_service.dart';
+import '../../services/admin/google_desktop_oauth.dart';
 
 class LoginSignupScreen extends StatefulWidget {
   const LoginSignupScreen({super.key});
@@ -83,28 +84,13 @@ class _LoginSignupScreenState extends State<LoginSignupScreen> {
         modelName: deviceModel,
       );
       await NodePresenceService.instance.start();
-
-      // 3. Trigger Cloudflare Tunnel Creation
-      setState(() => _statusMessage = "Requesting Secure Tunnel...");
-      await SupabaseService().triggerN8nWebhook(_deviceId!);
-
-      // 4. Poll for Tunnel Token (Wait for n8n to finish)
-      setState(() => _statusMessage = "Initializing Connection (this may take 10-20s)...");
-      var tunnelData = await _waitForTunnelToken(_deviceId!);
-
-      if (tunnelData == null) {
-        final lan = await NodePresenceService.lanUrl();
-        tunnelData = {'cf_tunnel_token': '', 'public_url': lan};
-        setState(() => _statusMessage = "Tunnel pending — using LAN $lan");
-      }
-      final tunnel = tunnelData!;
-
-      // 5. Reuse existing node if this PC already has one
+      final lan = await NodePresenceService.lanUrl();
+      setState(() => _statusMessage = "Using node / LAN $lan");
       await _openNode(
         email: email,
         password: password,
-        cfToken: tunnel['cf_tunnel_token']?.toString() ?? '',
-        publicUrl: tunnel['public_url']?.toString() ?? '',
+        cfToken: '',
+        publicUrl: lan,
       );
     } catch (e) {
       setState(() => _errorMessage = e.toString().replaceAll('Exception:', ''));
@@ -156,28 +142,53 @@ class _LoginSignupScreenState extends State<LoginSignupScreen> {
         modelName: deviceModel,
       );
       await NodePresenceService.instance.start();
-
-      // 3. Trigger Cloudflare Tunnel Creation
-      setState(() => _statusMessage = "Requesting Secure Tunnel...");
-      await SupabaseService().triggerN8nWebhook(_deviceId!);
-
-      // 4. Poll for Tunnel Token (Wait for n8n to finish)
-      setState(() => _statusMessage = "Initializing Connection (this may take 10-20s)...");
-      var tunnelData = await _waitForTunnelToken(_deviceId!);
-
-      if (tunnelData == null) {
-        final lan = await NodePresenceService.lanUrl();
-        tunnelData = {'cf_tunnel_token': '', 'public_url': lan};
-        setState(() => _statusMessage = "Tunnel pending — using LAN $lan");
-      }
-      final tunnel = tunnelData!;
-
-      // 5. Reuse existing node if this PC already has one
+      final lan = await NodePresenceService.lanUrl();
+      setState(() => _statusMessage = "Using node / LAN $lan");
       await _openNode(
         email: email,
         password: password,
-        cfToken: tunnel['cf_tunnel_token']?.toString() ?? '',
-        publicUrl: tunnel['public_url']?.toString() ?? '',
+        cfToken: '',
+        publicUrl: lan,
+      );
+    } catch (e) {
+      setState(() => _errorMessage = e.toString().replaceAll('Exception:', ''));
+    } finally {
+      if (mounted) setState(() => _isLoading = false);
+    }
+  }
+
+  Future<void> _handleGoogle() async {
+    if (_deviceId == null) return;
+    setState(() {
+      _isLoading = true;
+      _errorMessage = null;
+      _statusMessage = 'Google sign-in...';
+    });
+    try {
+      final res = await signInWithGoogleDesktop();
+      final user = res.user;
+      if (user == null) throw Exception('Google sign-in failed');
+      final email = user.email;
+      final prefs = await SharedPreferences.getInstance();
+      var localPass = prefs.getString('node_pg_password');
+      if (localPass == null || localPass.length < 8) {
+        localPass = _generateRandomId(16).toLowerCase();
+        await prefs.setString('node_pg_password', localPass);
+      }
+      setState(() => _statusMessage = 'Registering Device...');
+      await SupabaseService().registerDesktopDevice(
+        deviceId: _deviceId!,
+        userId: user.id,
+        modelName: await _getDeviceModel(),
+      );
+      await NodePresenceService.instance.start();
+      final lan = await NodePresenceService.lanUrl();
+      setState(() => _statusMessage = 'Using node / LAN $lan');
+      await _openNode(
+        email: email,
+        password: localPass,
+        cfToken: '',
+        publicUrl: lan,
       );
     } catch (e) {
       setState(() => _errorMessage = e.toString().replaceAll('Exception:', ''));
@@ -437,20 +448,37 @@ class _LoginSignupScreenState extends State<LoginSignupScreen> {
                   ],
                 )
               else
-                SizedBox(
-                  width: double.infinity,
-                  height: 50,
-                  child: ElevatedButton(
-                    onPressed: _isLoginMode ? _handleLogin : _handleSignup,
-                    style: ElevatedButton.styleFrom(
-                      backgroundColor: Colors.cyanAccent,
-                      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+                Column(
+                  children: [
+                    SizedBox(
+                      width: double.infinity,
+                      height: 50,
+                      child: ElevatedButton(
+                        onPressed: _isLoginMode ? _handleLogin : _handleSignup,
+                        style: ElevatedButton.styleFrom(
+                          backgroundColor: Colors.cyanAccent,
+                          shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+                        ),
+                        child: Text(
+                          _isLoginMode ? "INITIALIZE SYSTEM" : "CREATE ACCOUNT",
+                          style: const TextStyle(color: Colors.black, fontWeight: FontWeight.bold, letterSpacing: 1),
+                        ),
+                      ),
                     ),
-                    child: Text(
-                      _isLoginMode ? "INITIALIZE SYSTEM" : "CREATE ACCOUNT",
-                      style: const TextStyle(color: Colors.black, fontWeight: FontWeight.bold, letterSpacing: 1),
+                    const SizedBox(height: 12),
+                    SizedBox(
+                      width: double.infinity,
+                      height: 44,
+                      child: OutlinedButton(
+                        onPressed: _handleGoogle,
+                        style: OutlinedButton.styleFrom(
+                          side: const BorderSide(color: Colors.white24),
+                          shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+                        ),
+                        child: const Text('Continue with Google', style: TextStyle(color: Colors.white)),
+                      ),
                     ),
-                  ),
+                  ],
                 ),
               
               const SizedBox(height: 20),

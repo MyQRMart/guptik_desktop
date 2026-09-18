@@ -4,6 +4,7 @@ import 'dart:convert';
 import 'package:http/http.dart' as http;
 import 'package:uuid/uuid.dart';
 import '../../services/external/postgres_service.dart';
+import '../../services/admin/admin_shim.dart';
 
 class GuptikScreen extends StatefulWidget {
   const GuptikScreen({super.key});
@@ -146,7 +147,8 @@ class _GuptikScreenState extends State<GuptikScreen> {
       final requestBody = jsonEncode({
         "model": _aiModelName,
         "messages": historyForAi,
-        "stream": false 
+        "stream": false,
+        if (_aiProvider == "OpenRouter") "usage": {"include": true},
       });
 
       String safeUrl = _aiEndpointUrl.trim();
@@ -196,6 +198,10 @@ class _GuptikScreenState extends State<GuptikScreen> {
         } else {
           aiResponseText = "Response format not recognized.";
         }
+        final u = data['usage'];
+        if (u is Map) {
+          _logUsage(Map<String, dynamic>.from(u));
+        }
       } else {
         aiResponseText = "[API Error: ${response.statusCode}] - ${response.body}";
       }
@@ -214,6 +220,27 @@ class _GuptikScreenState extends State<GuptikScreen> {
       setState(() => _messages.last['content'] = "[Network Error: Check your AI Settings URL]\n$e");
     } finally {
       setState(() => _isGenerating = false);
+    }
+  }
+
+  Future<void> _logUsage(Map<String, dynamic> u) async {
+    try {
+      final uid = Supabase.instance.client.auth.currentUser?.id;
+      if (uid == null) return;
+      final prompt = (u['prompt_tokens'] as num?)?.toInt() ?? 0;
+      final completion = (u['completion_tokens'] as num?)?.toInt() ?? 0;
+      await Supabase.instance.client.from('ai_usage').insert({
+        'user_id': uid,
+        'provider': _aiProvider,
+        'model': _aiModelName,
+        'prompt_tokens': prompt,
+        'completion_tokens': completion,
+        'total_tokens': (u['total_tokens'] as num?)?.toInt() ?? (prompt + completion),
+        'cost': u['cost'],
+        'session_id': _sessionId,
+      });
+    } catch (e) {
+      debugPrint('usage log: $e');
     }
   }
 

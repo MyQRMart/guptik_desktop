@@ -1,7 +1,7 @@
 import 'dart:io';
 import 'package:flutter/foundation.dart';
 import 'package:uuid/uuid.dart';
-import 'package:supabase_flutter/supabase_flutter.dart';
+import 'package:guptik_desktop/services/admin/admin_shim.dart';
 import 'package:flutter_secure_storage/flutter_secure_storage.dart';
 import 'package:postgres/postgres.dart';
 import 'package:path/path.dart' as p;

@@ -3,7 +3,7 @@ import 'dart:io';
 import 'package:file_picker/file_picker.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart'; 
-import 'package:supabase_flutter/supabase_flutter.dart';
+import 'package:guptik_desktop/services/admin/admin_shim.dart';
 import 'package:video_player/video_player.dart';
 import 'package:http/http.dart' as http; 
 import '../../services/trustme/trust_me_service.dart';

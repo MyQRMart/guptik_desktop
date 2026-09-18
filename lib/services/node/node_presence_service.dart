@@ -3,7 +3,7 @@ import 'dart:io';
 import 'package:device_info_plus/device_info_plus.dart';
 import 'package:flutter/foundation.dart';
 import 'package:shared_preferences/shared_preferences.dart';
-import 'package:supabase_flutter/supabase_flutter.dart';
+import 'package:guptik_desktop/services/admin/admin_shim.dart';
 
 /// Publishes this PC as the user's home node so mobile (same account) can find it.
 class NodePresenceService {

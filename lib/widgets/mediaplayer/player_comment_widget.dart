@@ -1,5 +1,5 @@
 import 'package:flutter/material.dart';
-import 'package:supabase_flutter/supabase_flutter.dart';
+import 'package:guptik_desktop/services/admin/admin_shim.dart';
 import '../../models/mediaplayer/player_comment_model.dart';
 import '../../services/mediaplayer/player_comment_service.dart';
 

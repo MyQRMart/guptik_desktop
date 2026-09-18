@@ -1,4 +1,4 @@
-import 'package:supabase_flutter/supabase_flutter.dart';
+import 'package:guptik_desktop/services/admin/admin_shim.dart';
 import '../models/vault_file.dart';
 import '../models/conversation.dart';
 import '../models/message.dart';
@@ -75,28 +75,8 @@ class SupabaseService {
 
   // ============== N8N TRIGGER FIX ==============
 
-  Future<void> triggerN8nWebhook(String deviceId) async {
-    final webhookUrl = Uri.parse('https://yo.myqrmart.com/webhook/guptik-cf-user-tunnel');
-    try {
-      print("Attempting to trigger n8n for Device ID: $deviceId");
-      
-      // FIX: Added 'await' to ensure the request is actually sent before the app navigates
-      final response = await http.post(
-        webhookUrl,
-        headers: {'Content-Type': 'application/json'},
-        body: jsonEncode({'device_id': deviceId}),
-      );
-
-      if (response.statusCode == 200 || response.statusCode < 300) {
-        print("Webhook Triggered Successfully: ${response.statusCode}");
-      } else {
-        print("Webhook Failed: ${response.statusCode} - ${response.body}");
-      }
-    } catch (e) {
-      print('Webhook trigger exception: $e');
-      // Rethrow if you want the UI to handle it, otherwise just logging is fine here
-    }
-  }
+  /// n8n removed 2026-09-18. Tunnel is the node cloudflared, else LAN.
+  Future<void> triggerN8nWebhook(String deviceId) async {}
 
   // ============== VAULT OPERATIONS ==============
 

@@ -89,14 +89,15 @@ BEGIN
     BEGIN
         BLOCK "040904e4"
         BEGIN
-            VALUE "CompanyName", "com.example" "\0"
-            VALUE "FileDescription", "guptik_desktop" "\0"
+            VALUE "CompanyName", "MyQRMart" "\0"
+            VALUE "FileDescription", "GupTik — local-first home server" "\0"
             VALUE "FileVersion", VERSION_AS_STRING "\0"
-            VALUE "InternalName", "guptik_desktop" "\0"
-            VALUE "LegalCopyright", "Copyright (C) 2026 com.example. All rights reserved." "\0"
-            VALUE "OriginalFilename", "guptik_desktop.exe" "\0"
-            VALUE "ProductName", "guptik_desktop" "\0"
+            VALUE "InternalName", "GupTik" "\0"
+            VALUE "LegalCopyright", "Copyright (C) 2026 MyQRMart. All rights reserved." "\0"
+            VALUE "OriginalFilename", "GupTik.exe" "\0"
+            VALUE "ProductName", "GupTik" "\0"
             VALUE "ProductVersion", VERSION_AS_STRING "\0"
+            VALUE "Comments", "https://guptik.com  Privacy https://guptik.com/privacy  Terms https://guptik.com/terms" "\0"
         END
     END
     BLOCK "VarFileInfo"

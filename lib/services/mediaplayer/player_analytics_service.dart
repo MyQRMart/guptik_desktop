@@ -1,6 +1,6 @@
 import 'package:flutter/foundation.dart';
 import 'package:postgres/postgres.dart';
-import 'package:supabase_flutter/supabase_flutter.dart';
+import 'package:guptik_desktop/services/admin/admin_shim.dart';
 import '../../models/mediaplayer/player_repost_model.dart';
 import '../../models/mediaplayer/player_notification_model.dart';
 

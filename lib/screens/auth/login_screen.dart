@@ -1,9 +1,10 @@
 import 'package:flutter/material.dart';
-import 'package:supabase_flutter/supabase_flutter.dart';
+import 'package:guptik_desktop/services/admin/admin_shim.dart';
 import 'package:device_info_plus/device_info_plus.dart';
 import 'dart:io';
 import 'dart:math';
 import 'package:guptik_desktop/services/supabase_service.dart';
+import 'package:guptik_desktop/services/node/node_presence_service.dart';
 import '../onboarding/storage_selection_screen.dart';
 
 class LoginScreen extends StatefulWidget {
@@ -66,19 +67,10 @@ class _LoginScreenState extends State<LoginScreen> {
         modelName: deviceModel,
       );
 
-      // 3. Trigger Cloudflare Tunnel Creation
-      setState(() => _statusMessage = "Requesting Secure Tunnel...");
-      await SupabaseService().triggerN8nWebhook(_deviceId!);
+      await NodePresenceService.instance.start();
+      final lan = await NodePresenceService.lanUrl();
+      setState(() => _statusMessage = "Using node / LAN $lan");
 
-      // 4. Poll for Tunnel Token (Wait for n8n to finish)
-      setState(() => _statusMessage = "Initializing Connection (this may take 10-20s)...");
-      final tunnelData = await _waitForTunnelToken(_deviceId!);
-
-      if (tunnelData == null) {
-        throw Exception("Connection timed out. Cloudflare Tunnel could not be provisioned.");
-      }
-
-      // 5. Success -> Navigate to Storage Selection
       if (mounted) {
         Navigator.pushReplacement(
           context,
@@ -87,8 +79,8 @@ class _LoginScreenState extends State<LoginScreen> {
               deviceId: _deviceId!,
               userEmail: email,
               userPassword: password,
-              cfToken: tunnelData['cf_tunnel_token'], 
-              publicUrl: tunnelData['public_url'],    
+              cfToken: '',
+              publicUrl: lan,
             ),
           ),
         );

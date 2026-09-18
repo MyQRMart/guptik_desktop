@@ -1,7 +1,7 @@
 import 'dart:convert';
 import 'package:http/http.dart' as http;
 import 'package:flutter/foundation.dart';
-import 'package:supabase_flutter/supabase_flutter.dart';
+import 'package:guptik_desktop/services/admin/admin_shim.dart';
 import '../../models/mediaplayer/player_video_model.dart';
 import '../../models/mediaplayer/video_sticker_model.dart';
 import 'live_node_feed.dart';

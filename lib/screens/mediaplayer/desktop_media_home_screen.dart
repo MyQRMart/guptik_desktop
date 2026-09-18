@@ -1,7 +1,7 @@
 import 'dart:convert';
 import 'package:flutter/material.dart';
 import 'package:lucide_flutter/lucide_flutter.dart';
-import 'package:supabase_flutter/supabase_flutter.dart'; 
+import 'package:guptik_desktop/services/admin/admin_shim.dart'; 
 import 'package:http/http.dart' as http; // 🚀 Added for local history fetching
 import '../../models/mediaplayer/player_video_model.dart';
 import '../../services/mediaplayer/player_api_service.dart';

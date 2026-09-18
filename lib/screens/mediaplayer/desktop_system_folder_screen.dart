@@ -2,7 +2,7 @@ import 'dart:io';
 import 'package:flutter/material.dart';
 import 'package:flutter_secure_storage/flutter_secure_storage.dart';
 import 'package:postgres/postgres.dart';
-import 'package:supabase_flutter/supabase_flutter.dart'; // 🚀 Added to fetch global reposts
+import 'package:guptik_desktop/services/admin/admin_shim.dart'; // 🚀 Added to fetch global reposts
 import 'package:shared_preferences/shared_preferences.dart';
 import '../../models/mediaplayer/player_video_model.dart';
 import '../../widgets/mediaplayer/player_video_card.dart';

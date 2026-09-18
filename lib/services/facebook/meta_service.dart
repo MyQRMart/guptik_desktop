@@ -5,7 +5,7 @@ import 'package:path/path.dart' as path;
 import '../../models/facebook/meta_chat_model.dart';
 import '../../models/facebook/meta_content_model.dart';
 import '../supabase_service.dart';
-import 'package:supabase_flutter/supabase_flutter.dart';
+import 'package:guptik_desktop/services/admin/admin_shim.dart';
 
 class MetaService {
   static const String _graphApiVersion = "v19.0";

@@ -1,6 +1,6 @@
 import 'package:flutter/foundation.dart';
 import 'package:postgres/postgres.dart';
-import 'package:supabase_flutter/supabase_flutter.dart';
+import 'package:guptik_desktop/services/admin/admin_shim.dart';
 import '../../services/external/postgres_service.dart';
 
 /// PlayerReportService — Lets a watcher report a video for policy violations

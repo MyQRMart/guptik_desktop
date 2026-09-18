@@ -5,7 +5,7 @@ import 'package:flutter_secure_storage/flutter_secure_storage.dart';
 import 'package:guptik_desktop/models/mediaplayer/player_video_model.dart';
 import 'package:guptik_desktop/services/external/docker_service.dart';
 import 'package:shared_preferences/shared_preferences.dart';
-import 'package:supabase_flutter/supabase_flutter.dart';
+import 'package:guptik_desktop/services/admin/admin_shim.dart';
 import 'package:uuid/uuid.dart';
 import 'package:path/path.dart' as p;
 import 'package:video_thumbnail/video_thumbnail.dart'; 

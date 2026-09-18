@@ -1,5 +1,5 @@
 import 'package:flutter/material.dart';
-import 'package:supabase_flutter/supabase_flutter.dart';
+import 'package:guptik_desktop/services/admin/admin_shim.dart';
 import '../../services/mediaplayer/player_report_service.dart';
 
 /// ReportsScreen — Shows the watcher's filed reports (local mp_reports) and

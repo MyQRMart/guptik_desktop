@@ -3,7 +3,7 @@ import 'dart:io'; // 🚀 ADDED: To read files natively from Windows
 import 'package:flutter_secure_storage/flutter_secure_storage.dart';
 import 'package:http/http.dart' as http;
 import 'package:web_socket_channel/web_socket_channel.dart';
-import 'package:supabase_flutter/supabase_flutter.dart';
+import 'package:guptik_desktop/services/admin/admin_shim.dart';
 
 class TrustMeService {
   static TrustMeService? _instance;

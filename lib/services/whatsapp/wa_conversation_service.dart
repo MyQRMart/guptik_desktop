@@ -2,7 +2,7 @@ import 'package:flutter/material.dart';
 import 'package:guptik_desktop/models/whatsapp/wa_conversation.dart';
 import 'package:guptik_desktop/services/node/node_table_client.dart';
 import 'package:shared_preferences/shared_preferences.dart';
-import 'package:supabase_flutter/supabase_flutter.dart';
+import 'package:guptik_desktop/services/admin/admin_shim.dart';
 
 class ConversationService {
   final SupabaseClient _client = Supabase.instance.client;
