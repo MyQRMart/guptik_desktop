@@ -5,7 +5,6 @@ import 'package:flutter/services.dart';
 import 'package:media_kit/media_kit.dart';
 import 'package:media_kit_video/media_kit_video.dart';
 import 'package:guptik_desktop/services/admin/admin_shim.dart';
-import 'package:http/http.dart' as http;
 import 'dart:math' as math;
 import 'package:uuid/uuid.dart';
 
@@ -26,6 +25,7 @@ import '../../widgets/mediaplayer/sticker_overlay.dart';
 import '../../screens/mediaplayer/creator_profile_screen.dart';
 import '../../services/mediaplayer/player_watcher_interest_service.dart';
 import '../../services/mediaplayer/player_report_service.dart';
+import '../../services/node/node_http.dart';
 
 
 class DesktopMediaPlayerScreen extends StatefulWidget {
@@ -216,9 +216,10 @@ class _DesktopMediaPlayerScreenState extends State<DesktopMediaPlayerScreen> wit
   Future<void> _checkNodeReachable(String safeUrl, String streamUrl) async {
     try {
       final uri = Uri.parse('$safeUrl/player/video/stats/${widget.video.videoId}');
-      final response = await http.get(uri).timeout(const Duration(seconds: 8));
+      final response = await nodeHttp.get(uri).timeout(const Duration(seconds: 8));
       if (response.statusCode >= 200 && response.statusCode < 400) {
-        player.open(Media(streamUrl));
+        await NodeHttp.viewerToken(Uri.parse(streamUrl));
+        player.open(Media(streamUrl, httpHeaders: NodeHttp.headersFor(streamUrl)));
         player.play();
       } else {
         _showNodeError('Creator node responded with HTTP ${response.statusCode}. The video may be offline.');

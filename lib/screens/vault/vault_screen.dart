@@ -12,7 +12,7 @@ import '../../services/external/postgres_service.dart';
 import '../../screens/mediaplayer/desktop_system_folder_screen.dart';
 import '../../theme/app_chrome.dart';
 import 'package:file_picker/file_picker.dart';
-import 'package:http/http.dart' as http;
+import '../../services/node/node_http.dart';
 
 class VaultScreen extends StatefulWidget {
   const VaultScreen({super.key});
@@ -332,7 +332,7 @@ class _VaultScreenState extends State<VaultScreen> {
       final disk = File(file.filePath);
       if (await disk.exists()) await disk.delete();
       try {
-        await http.delete(Uri.parse('http://localhost:55000/vault/delete/${Uri.encodeComponent(file.fileName)}'));
+        await nodeHttp.delete(Uri.parse('http://localhost:55000/vault/delete/${Uri.encodeComponent(file.fileName)}'));
       } catch (_) {}
       await _refreshFiles();
     } catch (e) {

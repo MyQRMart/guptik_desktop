@@ -1,10 +1,10 @@
 import 'package:flutter/material.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'dart:convert';
-import 'package:http/http.dart' as http;
 import 'package:uuid/uuid.dart';
 import '../../services/external/postgres_service.dart';
 import '../../services/admin/admin_shim.dart';
+import '../../services/node/node_http.dart';
 
 class GuptikScreen extends StatefulWidget {
   const GuptikScreen({super.key});
@@ -79,7 +79,7 @@ class _GuptikScreenState extends State<GuptikScreen> {
   // 🚀 HELPER: PUSH CONFIG TO GATEWAY (PORT 55000)
   Future<void> _pushConfigToGateway(String provider, String url, String key, String model) async {
     try {
-      await http.post(
+      await nodeHttp.post(
         Uri.parse("http://localhost:55000/api/ai-config"),
         headers: {'Content-Type': 'application/json'},
         body: jsonEncode({
@@ -179,7 +179,7 @@ class _GuptikScreenState extends State<GuptikScreen> {
         }
       }
 
-      final response = await http.post(
+      final response = await nodeHttp.post(
         Uri.parse(safeUrl),
         headers: headers,
         body: requestBody,
@@ -323,7 +323,7 @@ class _GuptikScreenState extends State<GuptikScreen> {
               });
 
               try {
-                final res = await http.get(
+                final res = await nodeHttp.get(
                   Uri.parse("https://openrouter.ai/api/v1/models"),
                   headers: {"Authorization": "Bearer ${tempKey.trim()}"},
                 );

@@ -1,7 +1,7 @@
 import 'dart:convert';
 import 'package:flutter/foundation.dart';
-import 'package:http/http.dart' as http;
 import '../../models/mediaplayer/player_comment_model.dart';
+import '../node/node_http.dart';
 
 /// PlayerCommentService — Advanced comment system service.
 /// Handles nested replies, reactions, editing, deletion, and reporting
@@ -30,7 +30,7 @@ class PlayerCommentService {
     if (gatewayUrl == null) return [];
     try {
       final uri = Uri.parse('$_safeUrl/player/video/comments/$videoId');
-      final response = await http.get(uri, headers: {
+      final response = await nodeHttp.get(uri, headers: {
         'Content-Type': 'application/json',
         if (viewerUid != null) 'X-Viewer-Uid': viewerUid,
       });
@@ -64,7 +64,7 @@ class PlayerCommentService {
     try {
       final uri = Uri.parse(
           '$_safeUrl/player/video/comments/$videoId/replies/$parentCommentId');
-      final response = await http.get(uri, headers: {
+      final response = await nodeHttp.get(uri, headers: {
         'Content-Type': 'application/json',
         if (viewerUid != null) 'X-Viewer-Uid': viewerUid,
       });
@@ -99,7 +99,7 @@ class PlayerCommentService {
   }) async {
     if (gatewayUrl == null) return false;
     try {
-      final response = await http.post(
+      final response = await nodeHttp.post(
         Uri.parse('$_safeUrl/player/video/comment'),
         headers: {'Content-Type': 'application/json'},
         body: jsonEncode({
@@ -124,7 +124,7 @@ class PlayerCommentService {
       String commentId, String newText, String editorUid) async {
     if (gatewayUrl == null) return false;
     try {
-      final response = await http.put(
+      final response = await nodeHttp.put(
         Uri.parse('$_safeUrl/player/video/comment/$commentId'),
         headers: {'Content-Type': 'application/json'},
         body: jsonEncode({
@@ -143,7 +143,7 @@ class PlayerCommentService {
   Future<bool> deleteComment(String commentId, String deleterUid) async {
     if (gatewayUrl == null) return false;
     try {
-      final response = await http.delete(
+      final response = await nodeHttp.delete(
         Uri.parse('$_safeUrl/player/video/comment/$commentId'),
         headers: {'Content-Type': 'application/json'},
         body: jsonEncode({'deleter_uid': deleterUid}),
@@ -168,7 +168,7 @@ class PlayerCommentService {
   }) async {
     if (gatewayUrl == null) return null;
     try {
-      final response = await http.post(
+      final response = await nodeHttp.post(
         Uri.parse('$_safeUrl/player/video/comment/$commentId/react'),
         headers: {'Content-Type': 'application/json'},
         body: jsonEncode({
@@ -206,7 +206,7 @@ class PlayerCommentService {
   }) async {
     if (gatewayUrl == null) return false;
     try {
-      final response = await http.post(
+      final response = await nodeHttp.post(
         Uri.parse('$_safeUrl/player/video/comment/$commentId/report'),
         headers: {'Content-Type': 'application/json'},
         body: jsonEncode({
@@ -227,7 +227,7 @@ class PlayerCommentService {
   Future<bool> hideComment(String commentId, String moderatorUid) async {
     if (gatewayUrl == null) return false;
     try {
-      final response = await http.post(
+      final response = await nodeHttp.post(
         Uri.parse('$_safeUrl/player/video/comment/$commentId/hide'),
         headers: {'Content-Type': 'application/json'},
         body: jsonEncode({'moderator_uid': moderatorUid}),

@@ -4,6 +4,7 @@ import 'package:flutter_secure_storage/flutter_secure_storage.dart';
 import '../updates/guptik_version.dart';
 import 'gateway_sources.dart';
 import 'db_secrets.dart';
+import '../node/node_secrets.dart';
 
 class DockerService {
 
@@ -309,6 +310,13 @@ services:
     var dirty = false;
     if (!DbSecrets.loadFrom(vault)) {
       await _rotateLegacyDbSecrets(vault, project);
+      dirty = true;
+    }
+
+    // Owner token for the desktop (plaintext in OS secure storage, hash + auth mode in .env).
+    final env = DbSecrets.readEnvSync(vault);
+    if (await NodeSecrets.ensureOwnerToken(env)) {
+      await DbSecrets.writeEnv(vault, env);
       dirty = true;
     }
 
@@ -2960,6 +2968,7 @@ void main() async {
           FROM mp_videos v
           LEFT JOIN mp_channels c ON v.channel_id = c.channel_id
           WHERE v.channel_id = @cid AND v.is_deleted = false
+          ${principalOf(req)?.role == Role.viewer ? "AND COALESCE(v.visibility, 'public') = 'public'" : ""}
           ORDER BY v.upload_timestamp DESC
         """),
         parameters: {'cid': channelId}
@@ -4004,7 +4013,16 @@ void main() async {
     } catch (e) {}
   });
 
-  final handler = Pipeline().addMiddleware(logRequests()).addHandler(router.call);
+  // Authentication: GATEWAY_AUTH=audit (default) logs what would be denied; enforce blocks it.
+  gatewayEnforce = (Platform.environment['GATEWAY_AUTH'] ?? 'audit') == 'enforce';
+  final authStore = AuthStore.fromEnv();
+  registerAuthRoutes(router, authStore);
+  print('Gateway auth mode: ${gatewayEnforce ? 'ENFORCE' : 'AUDIT (logging only, not blocking)'}');
+
+  final handler = Pipeline()
+      .addMiddleware(logRequests())
+      .addMiddleware(gatewayAuth(authStore))
+      .addHandler(router.call);
   final server = await serve(handler, InternetAddress.anyIPv4, 8080);
   print('Gateway listening on port ${server.port}');
 }

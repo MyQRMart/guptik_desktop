@@ -1,7 +1,7 @@
 import 'dart:async';
 import 'dart:convert';
-import 'package:http/http.dart' as http;
 import 'package:shared_preferences/shared_preferences.dart';
+import '../node/node_http.dart';
 
 /// PlayerAIService — Cloud-powered video enhancement supporting OpenRouter, OpenAI, Gemini, Anthropic, etc.
 class PlayerAIService {
@@ -69,7 +69,7 @@ class PlayerAIService {
     });
 
     try {
-      final response = await http.post(
+      final response = await nodeHttp.post(
         Uri.parse(safeUrl),
         headers: headers,
         body: requestBody,

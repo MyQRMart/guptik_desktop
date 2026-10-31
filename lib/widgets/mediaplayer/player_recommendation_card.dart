@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 import '../../models/mediaplayer/player_video_model.dart';
 import '../../screens/mediaplayer/desktop_media_player_screen.dart';
 import '../../services/mediaplayer/player_api_service.dart';
+import '../node_image.dart';
 
 class PlayerRecommendationCard extends StatefulWidget {
   final PlayerVideo video;
@@ -85,7 +86,7 @@ class _PlayerRecommendationCardState extends State<PlayerRecommendationCard> {
                 child: SizedBox(
                   width: 150, 
                   height: 90,
-                  child: Image.network(
+                  child: NodeImage(
                     thumbnailUrl,
                     fit: BoxFit.cover,
                     errorBuilder: (context, error, stackTrace) {

@@ -5,6 +5,7 @@ import 'package:media_kit/media_kit.dart';
 import '../../models/mediaplayer/video_sticker_model.dart';
 import '../../services/mediaplayer/player_monetization_service.dart';
 import '../../services/mediaplayer/player_api_service.dart';
+import '../node_image.dart';
 
 /// StickerOverlay — Renders shoppable product stickers on top of the video
 /// (YouTube/IG-style). Stickers appear at their [VideoSticker.timestampInVideo]
@@ -191,7 +192,7 @@ Widget _stickerImage(String? path, double size) {
   if (path == null || path.isEmpty) return fallback;
   final isNetwork = path.startsWith('http://') || path.startsWith('https://');
   final img = isNetwork
-      ? Image.network(path, fit: BoxFit.contain,
+      ? NodeImage(path, fit: BoxFit.contain,
           errorBuilder: (_, __, ___) => fallback)
       : Image.file(File(path), fit: BoxFit.contain,
           errorBuilder: (_, __, ___) => fallback);

@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 import '../../models/mediaplayer/player_video_model.dart';
 import '../../screens/mediaplayer/desktop_media_player_screen.dart';
 import '../../services/mediaplayer/player_api_service.dart';
+import '../node_image.dart';
 
 class PlayerVideoCard extends StatefulWidget {
   final PlayerVideo video;
@@ -170,7 +171,7 @@ class _PlayerVideoCardState extends State<PlayerVideoCard> {
                     aspectRatio: isReel ? 9 / 16 : 16 / 9, 
                     child: Container(
                       color: Colors.black, 
-                      child: Image.network(
+                      child: NodeImage(
                         thumbnailUrl,
                         fit: BoxFit.cover, 
                         errorBuilder: (context, error, stackTrace) => const Center(
