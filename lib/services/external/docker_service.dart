@@ -326,6 +326,26 @@ services:
     if (dirty) await _rewriteNodeFiles(vault, project);
   }
 
+  /// Current gateway auth mode from .env ('audit' or 'enforce').
+  Future<String> gatewayAuthMode() async {
+    final v = _vaultPath ?? (await findExistingStack())?.workingDir;
+    if (v == null) return 'audit';
+    return DbSecrets.readEnvSync(v)['GATEWAY_AUTH'] == 'enforce' ? 'enforce' : 'audit';
+  }
+
+  /// Switches the gateway between audit (log only) and enforce (block) and recreates it.
+  Future<void> setGatewayAuthMode({required bool enforce}) async {
+    final existing = await findExistingStack();
+    if (existing != null) _vaultPath = existing.workingDir;
+    final vault = _vaultPath;
+    if (vault == null) throw Exception('No GupTik node on this PC');
+    final env = DbSecrets.readEnvSync(vault);
+    env['GATEWAY_AUTH'] = enforce ? 'enforce' : 'audit';
+    await DbSecrets.writeEnv(vault, env);
+    final up = await _compose(vault, existing?.project ?? composeProject, ['up', '-d']);
+    if (up.exitCode != 0) throw Exception('docker compose up failed: ${up.stderr}');
+  }
+
   /// Rewrites compose + gateway files and recreates the containers whose definition changed.
   Future<void> _rewriteNodeFiles(String vault, String project) async {
     var publicUrl = 'localhost:55000';

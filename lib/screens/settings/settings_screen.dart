@@ -6,6 +6,7 @@ import '../../services/updates/guptik_version.dart';
 import '../../services/updates/update_service.dart';
 import 'package:url_launcher/url_launcher.dart';
 import '../auth/login_signup_screen.dart';
+import 'pair_phone_card.dart';
 
 class SettingsScreen extends StatefulWidget {
   const SettingsScreen({super.key});
@@ -187,6 +188,8 @@ MaterialPageRoute(builder: (_) => const LoginSignupScreen()),
           const SizedBox(height: 16),
           _updatesCard(),
           const SizedBox(height: 16),
+
+          const PairPhoneCard(),
 
           // Regular Settings Panel
           Container(
