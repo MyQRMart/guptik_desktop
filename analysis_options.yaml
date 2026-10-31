@@ -1,6 +1,7 @@
 analyzer:
   exclude:
     - build/**
+    - lib_old_backup/**   # retired app, not built; kept only until it is deleted
     - web/**
     - windows/**
     - macos/**

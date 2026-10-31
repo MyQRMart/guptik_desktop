@@ -125,6 +125,9 @@ class GotrueClient {
 class AdminFilter implements Future<dynamic> {
   final String table;
   final Map<String, String> _eq = {};
+  // Extra PostgREST-style filters (not / filter / inFilter). A list so the same
+  // column can carry more than one filter, e.g. eq plus not.
+  final List<MapEntry<String, String>> _extra = [];
   String? _or;
   String? _order;
   int? _limit;
@@ -145,6 +148,25 @@ class AdminFilter implements Future<dynamic> {
     m.forEach((k, v) => eq(k, v));
     return this;
   }
+  static String _lit(dynamic v) => v == null ? 'null' : '$v';
+  static String _inList(Iterable<dynamic> v) => '(${v.map(_lit).join(',')})';
+
+  /// `.not('col', 'is', null)` becomes `col=not.is.null`.
+  AdminFilter not(String col, String op, dynamic value) {
+    final v = value is Iterable ? _inList(value) : _lit(value);
+    _extra.add(MapEntry(col, 'not.$op.$v'));
+    return this;
+  }
+
+  /// `.filter('col', 'in', [..])` becomes `col=in.(a,b)`; other operators pass through.
+  AdminFilter filter(String col, String op, dynamic value) {
+    final v = value is Iterable ? _inList(value) : _lit(value);
+    _extra.add(MapEntry(col, '$op.$v'));
+    return this;
+  }
+
+  AdminFilter inFilter(String col, List<dynamic> values) => filter(col, 'in', values);
+
   AdminFilter or(String expr) {
     _or = expr;
     return this;
@@ -195,13 +217,18 @@ class AdminFilter implements Future<dynamic> {
   }
 
   Uri _uri() {
-    final q = <String, String>{..._eq};
-    if (_or != null) q['or'] = _or!;
-    if (_order != null) q['order'] = _order!;
-    if (_limit != null) q['limit'] = '$_limit';
+    final q = <String, List<String>>{
+      for (final e in _eq.entries) e.key: [e.value],
+    };
+    for (final e in _extra) {
+      q.putIfAbsent(e.key, () => []).add(e.value);
+    }
+    if (_or != null) q['or'] = [_or!];
+    if (_order != null) q['order'] = [_order!];
+    if (_limit != null) q['limit'] = ['$_limit'];
     if (_op == 'post' && _onConflict != null) {
-      q['upsert'] = '1';
-      q['on_conflict'] = _onConflict!;
+      q['upsert'] = ['1'];
+      q['on_conflict'] = [_onConflict!];
     }
     return Uri.parse('${AdminHttp.base}/rest/$table').replace(queryParameters: q.isEmpty ? null : q);
   }
@@ -218,7 +245,16 @@ class AdminFilter implements Future<dynamic> {
     } else {
       r = await http.delete(_uri(), headers: headers);
     }
-    final decoded = r.body.isEmpty ? null : jsonDecode(r.body);
+    dynamic decoded;
+    if (r.body.isNotEmpty) {
+      try {
+        decoded = jsonDecode(r.body);
+      } on FormatException {
+        // Non-JSON body (for example an HTML error page): report the status instead.
+        if (r.statusCode >= 400) throw AuthException('http ${r.statusCode}');
+        rethrow;
+      }
+    }
     if (r.statusCode >= 400) {
       throw AuthException((decoded is Map ? decoded['error'] : null)?.toString() ?? 'http ${r.statusCode}');
     }
@@ -258,6 +294,23 @@ class AdminClient {
   final storage = _Storage();
   AdminFilter from(String table) => AdminFilter(table);
   RealtimeChannel channel(String name) => RealtimeChannel();
+
+  /// Calls `POST /rest/rpc/<fn>` on guptik.com. ASSUMPTION: the closed-source
+  /// backend exposes the Supabase-style rpc path; callers should treat failure as non-fatal.
+  Future<dynamic> rpc(String fn, {Map<String, dynamic>? params}) async {
+    final r = await http.post(
+      Uri.parse('${AdminHttp.base}/rest/rpc/$fn'),
+      headers: await AdminHttp.headers(),
+      body: jsonEncode(params ?? <String, dynamic>{}),
+    );
+    if (r.statusCode >= 400) throw AuthException('rpc $fn failed: http ${r.statusCode}');
+    if (r.body.isEmpty) return null;
+    try {
+      return jsonDecode(r.body);
+    } on FormatException {
+      return null;
+    }
+  }
 }
 
 class Supabase {

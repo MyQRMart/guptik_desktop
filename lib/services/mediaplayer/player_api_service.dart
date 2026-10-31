@@ -587,14 +587,18 @@ class PlayerApiService {
             'channel_id': channelId
           });
           // Update global channel count
-          await supabase.rpc('increment_subscriber_count', params: {'cid': channelId}); 
+          try {
+            await supabase.rpc('increment_subscriber_count', params: {'cid': channelId});
+          } catch (_) {/* count is cosmetic; the subscription row is already saved */}
         } else {
           await supabase.from('mp_subscriptions').delete().match({
             'subscriber_uid': subscriberUid,
             'channel_id': channelId
           });
           // Decrease global channel count
-          await supabase.rpc('decrement_subscriber_count', params: {'cid': channelId});
+          try {
+            await supabase.rpc('decrement_subscriber_count', params: {'cid': channelId});
+          } catch (_) {/* count is cosmetic; the subscription row is already removed */}
         }
         
         return isSubscribed;
