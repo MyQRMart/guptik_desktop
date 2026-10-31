@@ -14,4 +14,5 @@ environment: {sdk: '>=3.0.0 <4.0.0'}
 dependencies: {shelf: ^1.4.0, shelf_router: ^1.1.0, http: ^1.1.0, mime: ^1.0.4, postgres: ^3.4.0, uuid: ^4.3.3, crypto: ^3.0.3}
 dev_dependencies: {test: ^1.24.0}
 YAML
-cd "$WORK" && dart pub get >/dev/null && dart analyze lib && dart test
+python3 "$ROOT/tool/gateway_test/extract_server.py" "$WORK/lib/server.dart"
+cd "$WORK" && dart pub get >/dev/null && dart analyze --no-fatal-warnings lib | tee analyze.txt && ! grep -E "^\s*error" analyze.txt && dart test

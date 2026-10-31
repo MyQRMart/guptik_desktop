@@ -2,6 +2,7 @@ import 'dart:io';
 import 'package:process_run/shell.dart';
 import 'package:flutter_secure_storage/flutter_secure_storage.dart';
 import '../updates/guptik_version.dart';
+import 'gateway_sources.dart';
 
 class DockerService {
 
@@ -287,7 +288,7 @@ Future<void> _generateGatewayFiles(String publicUrl) async {
     await pubspec.writeAsString('''
 name: guptik_gateway
 environment: {sdk: '>=3.0.0 <4.0.0'}
-dependencies: {shelf: ^1.4.0, shelf_router: ^1.1.0, http: ^1.1.0, mime: ^1.0.4, postgres: ^3.4.0, uuid: ^4.3.3}
+dependencies: {shelf: ^1.4.0, shelf_router: ^1.1.0, http: ^1.1.0, mime: ^1.0.4, postgres: ^3.4.0, uuid: ^4.3.3, crypto: ^3.0.3}
 ''');
 
     final dockerfile = File('$_vaultPath/gateway/Dockerfile');
@@ -296,6 +297,8 @@ FROM dart:stable
 # 🚀 THE INSTANT SPEED HACK: Copies a pre-compiled static binary in seconds 
 COPY --from=mwader/static-ffmpeg:6.1.1 /ffmpeg /usr/local/bin/
 ''');
+
+    await File('$_vaultPath/gateway/gateway_auth.dart').writeAsString(kGatewayAuthDart);
 
     final server = File('$_vaultPath/gateway/server.dart');
 
@@ -311,6 +314,7 @@ import 'package:http/http.dart' as http;
 import 'package:mime/mime.dart';
 import 'package:postgres/postgres.dart';
 import 'package:uuid/uuid.dart';
+import 'gateway_auth.dart';
 
 // 🚀 Top-level global memory (Above main)
 String currentAiProvider = "OpenRouter";
@@ -332,7 +336,8 @@ void main() async {
 
   router.get('/internal/media/<filename>', (Request req, String filename) async {
     try {
-      final file = File('/app/storage/$filename');
+      try { safeStorageName(filename); } on FormatException { return Response.badRequest(body: 'Invalid file name.'); }
+      final file = storageFile(filename);
       if (!await file.exists()) return Response.notFound('File not found.');
       
       final fileSize = await file.length();
@@ -379,7 +384,8 @@ void main() async {
     IOSink? sink;
     try {
       filename = Uri.decodeComponent(filename);
-      final file = File('/app/storage/$filename');
+      try { safeStorageName(filename); } on FormatException { return Response.badRequest(body: 'Invalid file name.'); }
+      final file = storageFile(filename);
       sink = file.openWrite();
       await sink.addStream(req.read());
       await sink.flush();
@@ -412,6 +418,7 @@ void main() async {
   router.get('/vault/files/<filename>', (Request req, String filename) async {
     try {
       filename = Uri.decodeComponent(filename);
+      try { safeStorageName(filename); } on FormatException { return Response.badRequest(body: 'Invalid file name.'); }
       final token = req.url.queryParameters['token'];
       final email = req.url.queryParameters['email'];
 
@@ -427,18 +434,22 @@ void main() async {
       await connection.close();
 
       Future<Response> serve() async {
-        final file = File('/app/storage/$filename');
+        final file = storageFile(filename);
         if (!await file.exists()) return Response.notFound('File not found.');
         final mimeType = lookupMimeType(file.path) ?? 'application/octet-stream';
         return Response.ok(file.openRead(), headers: {
           'Content-Type': mimeType,
           'Content-Length': (await file.length()).toString(),
-          'Content-Disposition': 'inline; filename="$filename"',
+          'Content-Disposition': 'inline; filename="${filename.replaceAll(RegExp(r'["\r\n]'), '_')}"',
         });
       }
 
-      // No share row = owner / Trust Me on this node.
-      if (result.isEmpty) return await serve();
+      // No share row = private: only the owner's desktop or a paired phone may read it.
+      // (In GATEWAY_AUTH=audit mode this is logged instead of refused.)
+      if (result.isEmpty) {
+        if (!trustedOrAudit(req)) return Response.forbidden('This file is private.');
+        return await serve();
+      }
 
       final row = result.first;
       final isPublic = row[0] as bool;
@@ -461,7 +472,7 @@ void main() async {
               <div style="background: #1E293B; padding: 40px; border-radius: 12px; text-align: center;">
                 <h2>Secure File Access</h2>
                 <form method="GET">
-                  <input type="hidden" name="token" value="${token ?? ''}" />
+                  <input type="hidden" name="token" value="${const HtmlEscape(HtmlEscapeMode.attribute).convert(token ?? '')}" />
                   <input type="email" name="email" placeholder="Enter email" required style="padding: 10px; margin-bottom: 10px; width: 100%;" />
                   <button type="submit" style="padding: 10px; width: 100%; background: #00E5FF; border: none; font-weight: bold;">Verify</button>
                 </form>
@@ -662,7 +673,8 @@ void main() async {
 
   router.delete('/vault/delete/<filename>', (Request req, String filename) async {
     try {
-      final file = File('/app/storage/$filename');
+      try { safeStorageName(filename); } on FormatException { return Response.badRequest(body: 'Invalid file name.'); }
+      final file = storageFile(filename);
       if (await file.exists()) await file.delete();
       final connection = await Connection.open(
         Endpoint(host: 'db', port: 5432, database: 'postgres', username: 'postgres', password: 'GuptikSystemPassword2026'),
@@ -1201,7 +1213,7 @@ void main() async {
 
       final messageId = uuid.v4();
       final filename = '${messageId}.$ext';
-      final file = File('/app/storage/$filename');
+      final file = storageFile(filename);
       final sink = file.openWrite();
       await sink.addStream(req.read());
       await sink.flush();
@@ -1242,7 +1254,7 @@ void main() async {
       final contentType = req.headers['x-content-type'] ?? 'media';
 
       final filename = '${messageId}.$ext';
-      final file = File('/app/storage/$filename');
+      final file = storageFile(filename);
       final sink = file.openWrite();
       await sink.addStream(req.read());
       await sink.flush();
@@ -3610,7 +3622,7 @@ void main() async {
 
       // 🚀 TARGET PATH DESIGN: Matches your video streaming fallback criteria perfectly!
       final filename = "$videoId.mp4";
-      final file = File('/app/storage/$filename');
+      final file = storageFile(filename);
       
       // 🚀 THE FIX: Use addStream instead of pipe to handle the byte stream correctly
       final sink = file.openWrite();
@@ -3692,7 +3704,7 @@ void main() async {
     final bodyBytes = await req.read().expand((chunk) => chunk).toList();
     if (bodyBytes.isNotEmpty) {
       final filename = 'sticker_${DateTime.now().millisecondsSinceEpoch}.png';
-      final file = File('/app/storage/$filename');
+      final file = storageFile(filename);
       await file.writeAsBytes(bodyBytes);
       final baseUrl = '${req.requestedUri.scheme}://${req.requestedUri.host}:${req.requestedUri.port}';
       imagePath = '$baseUrl/internal/media/$filename';
