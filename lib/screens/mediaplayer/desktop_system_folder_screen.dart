@@ -1,3 +1,4 @@
+import '../../services/external/db_secrets.dart';
 import 'dart:io';
 import 'package:flutter/material.dart';
 import 'package:flutter_secure_storage/flutter_secure_storage.dart';
@@ -6,7 +7,6 @@ import 'package:guptik_desktop/services/admin/admin_shim.dart'; // 🚀 Added to
 import 'package:shared_preferences/shared_preferences.dart';
 import '../../models/mediaplayer/player_video_model.dart';
 import '../../widgets/mediaplayer/player_video_card.dart';
-import '../../services/external/postgres_service.dart';
 
 class DesktopSystemFolderScreen extends StatefulWidget {
   final String folderType; // 'posted', 'saved', 'drafts', 'repost', or 'stickers'
@@ -131,7 +131,7 @@ class _DesktopSystemFolderScreenState extends State<DesktopSystemFolderScreen> {
       } else {
         // 3. Connect directly to the local Postgres Node for local folders!
         final connection = await Connection.open(
-          Endpoint(host: 'localhost', port: 55432, database: 'postgres', username: 'postgres', password: PostgresService.dockerMasterPassword),
+          Endpoint(host: 'localhost', port: 55432, database: 'postgres', username: 'postgres', password: DbSecrets.master),
           settings: const ConnectionSettings(sslMode: SslMode.disable),
         );
 

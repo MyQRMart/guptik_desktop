@@ -1,7 +1,7 @@
+import '../external/db_secrets.dart';
 import 'package:flutter/foundation.dart';
 import 'package:postgres/postgres.dart';
 import 'package:guptik_desktop/services/admin/admin_shim.dart';
-import '../../services/external/postgres_service.dart';
 
 /// PlayerReportService — Lets a watcher report a video for policy violations
 /// (spam, harassment, nudity, etc.).
@@ -14,7 +14,7 @@ class PlayerReportService {
   final int _localDbPort = 55432;
   final String _dbName = 'postgres';
   final String _dbUser = 'postgres';
-  final String _dbPass = PostgresService.dockerMasterPassword;
+  String get _dbPass => DbSecrets.master;
 
   Future<Connection> _connect() async {
     return Connection.open(

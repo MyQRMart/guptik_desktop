@@ -82,7 +82,7 @@ class _InstallationScreenState extends State<InstallationScreen> {
       await prefs.setBool('is_logged_in', true);
       await prefs.setString('vault_path', vault);
       await prefs.setString('user_email', widget.userEmail);
-      await prefs.setString('user_password', widget.userPassword);
+      await prefs.remove('user_password'); // never keep the account password on disk
       await DockerService.rememberVault(vault);
 
       if (existing != null && (existing.running || await DockerService.gatewayUp())) {
@@ -96,11 +96,9 @@ class _InstallationScreenState extends State<InstallationScreen> {
       } else {
         _addLog("Configuring Docker containers...");
         await _dockerService.autoConfigure(
-          dbPass: widget.userPassword,
           tunnelToken: widget.cfToken,
           publicUrl: widget.publicUrl,
           email: widget.userEmail,
-          userPassword: widget.userPassword,
         );
         _addLog("Starting Docker Stack (first install)...");
         await _dockerService.startStack(build: true);
@@ -108,17 +106,14 @@ class _InstallationScreenState extends State<InstallationScreen> {
         _addLog("✓ Docker Services are Active.");
       }
 
+      _addLog("Securing node (database secrets)...");
+      await _dockerService.ensureNodeSecurity();
+
       _addLog("Connecting Local Postgres...");
       try {
-        await PostgresService().connectExistingUser(
-          email: widget.userEmail,
-          userPassword: widget.userPassword,
-        );
+        await PostgresService().connectExistingUser(email: widget.userEmail);
       } catch (_) {
-        await PostgresService().initializeUserDatabase(
-          email: widget.userEmail,
-          userPassword: widget.userPassword,
-        );
+        await PostgresService().initializeUserDatabase(email: widget.userEmail);
       }
 
       setState(() {
