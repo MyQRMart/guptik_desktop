@@ -142,6 +142,7 @@ class DockerService {
       _vaultPath = existing.workingDir;
     }
     if (_vaultPath == null) throw Exception('No GupTik node on this PC');
+    await ensureLoopbackDb();
     Directory('$_vaultPath/gateway').createSync(recursive: true);
     final env = File('$_vaultPath/.env');
     var publicUrl = 'localhost:55000';
@@ -202,8 +203,12 @@ VAULT_PATH=$_vaultPath
     await _generateGatewayFiles(publicUrl);
     await writeNodeVersion();
 
-    final composeFile = File('$_vaultPath/docker-compose.yml');
-    await composeFile.writeAsString('''
+    await writeCompose();
+  }
+
+  /// The one docker-compose.yml template for a node. New installs and the
+  /// migration for existing installs both write this text.
+  static String _composeYaml() => '''
 name: guptik
 services:
   guptik-tunnel:
@@ -234,7 +239,7 @@ services:
     image: postgres:15-alpine
     restart: always
     ports:
-      - "\${POSTGRES_PORT}:5432"
+      - "127.0.0.1:\${POSTGRES_PORT}:5432"
     environment:
       POSTGRES_USER: postgres
       POSTGRES_PASSWORD: GuptikSystemPassword2026
@@ -251,7 +256,30 @@ services:
     volumes:
       - ./data/osint:/app
     command: tail -f /dev/null
-''');
+''';
+
+  /// Writes docker-compose.yml (the previous file is kept as docker-compose.yml.bak).
+  Future<void> writeCompose() async {
+    if (_vaultPath == null) throw Exception('Vault path is not initialized');
+    final f = File('$_vaultPath/docker-compose.yml');
+    if (await f.exists()) await f.copy('$_vaultPath/docker-compose.yml.bak');
+    await f.writeAsString(_composeYaml());
+  }
+
+  /// Existing installs published Postgres on every network interface. Rewrite
+  /// the compose file so it is bound to 127.0.0.1 and recreate only the db
+  /// container (data lives in ./data/postgres). Idempotent.
+  Future<void> ensureLoopbackDb() async {
+    final existing = await findExistingStack();
+    if (existing != null) _vaultPath = existing.workingDir;
+    if (_vaultPath == null) return;
+    final f = File('$_vaultPath/docker-compose.yml');
+    if (!await f.exists()) return;
+    if ((await f.readAsString()).contains('127.0.0.1:')) return;
+    await writeCompose();
+    final project = existing?.project ?? composeProject;
+    await Shell(workingDirectory: _vaultPath, environment: Platform.environment, throwOnError: false)
+        .run('docker compose -p $project up -d db');
   }
 
 Future<void> _generateGatewayFiles(String publicUrl) async {

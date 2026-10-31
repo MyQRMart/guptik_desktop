@@ -55,6 +55,12 @@ class _BootScreenState extends State<BootScreen> {
 
       // 2. Re-link Docker Service to the correct path
       DockerService().setVaultPath(vaultPath);
+      try {
+        // Older installs published Postgres on every network interface.
+        await DockerService().ensureLoopbackDb();
+      } catch (e) {
+        print('Loopback migration: $e');
+      }
 
       // 3. Re-connect to Postgres (Retries in case Docker is still booting)
       int retries = 0;
