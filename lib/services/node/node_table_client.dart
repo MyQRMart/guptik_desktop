@@ -1,6 +1,7 @@
 import 'dart:convert';
 import 'package:flutter/foundation.dart';
 import 'package:http/http.dart' as http;
+import 'node_http.dart';
 
 class NodeTableClient {
   static const _base = 'http://localhost:55000';
@@ -21,7 +22,7 @@ class NodeTableClient {
       if (notNull != null) 'not_null': notNull,
     };
     final uri = Uri.parse('$_base/store/$table').replace(queryParameters: qp.isEmpty ? null : qp);
-    final res = await http.get(uri).timeout(const Duration(seconds: 20));
+    final res = await nodeHttp.get(uri).timeout(const Duration(seconds: 20));
     if (res.statusCode != 200) {
       debugPrint('store GET $table ${res.statusCode} ${res.body}');
       throw StateError('Node store GET failed (${res.statusCode}).');
@@ -73,7 +74,7 @@ class NodeTableClient {
     final uri = Uri.parse('$_base/store/$table').replace(
       queryParameters: {for (final e in eq.entries) 'eq_${e.key}': e.value},
     );
-    final res = await http.delete(uri).timeout(const Duration(seconds: 20));
+    final res = await nodeHttp.delete(uri).timeout(const Duration(seconds: 20));
     if (res.statusCode != 200) {
       debugPrint('store DELETE $table ${res.statusCode} ${res.body}');
       throw StateError('Node store delete failed (${res.statusCode}).');

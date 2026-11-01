@@ -1,3 +1,4 @@
+import '../external/db_secrets.dart';
 import 'dart:io';
 import 'package:flutter/foundation.dart';
 import 'package:uuid/uuid.dart';
@@ -15,7 +16,7 @@ class PlayerUploadService {
   final int _localDbPort = 55432; 
   final String _dbName = 'postgres';
   final String _dbUser = 'postgres';
-  final String _dbPass = 'GuptikSystemPassword2026';
+  String get _dbPass => DbSecrets.master;
 
   // 🚀 MOVED: Helper function is now a class method
   Future<void> syncChannelToAdmin(String userId, String channelName, {String? tunnelUrl}) async {

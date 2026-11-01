@@ -1,4 +1,6 @@
 import 'package:postgres/postgres.dart';
+import 'db_secrets.dart';
+import 'docker_service.dart';
 import 'dart:math';
 import 'dart:convert'; // 🚀 CRITICAL: Required for JSON encoding the Trust Me encryption keys!
 
@@ -21,12 +23,20 @@ class PostgresService {
     );
   }
 
+  /// Loads the node's database secrets from the vault's .env if this process has not yet.
+  void _requireSecrets() {
+    if (DbSecrets.isLoaded) return;
+    final vault = DockerService().vaultPath;
+    if (vault == null || !DbSecrets.loadFrom(vault)) {
+      throw StateError('Database secrets are not available yet. The node security update has not run.');
+    }
+  }
+
   // The active connection
   Connection? _connection;
   bool _isConnected = false;
 
-  // Master System Password (Must match your docker-compose.yml)
-  static const String dockerMasterPassword = "GuptikSystemPassword2026";
+  // Database passwords come from DbSecrets (per-node random values kept in the vault's .env).
 
   // ==============================================================================
   // SECTION 1: CONNECTION MANAGEMENT
@@ -51,6 +61,7 @@ class PostgresService {
   // session — and is called from BOTH connect() and connectExistingUser(),
   // so migrations always run on every launch, regardless of login path.
   Future<void> _runSchemaMigrations() async {
+    _requireSecrets();
     Connection? migrationConn;
     try {
       migrationConn = await Connection.open(
@@ -59,7 +70,7 @@ class PostgresService {
           port: 55432,
           database: 'postgres',
           username: 'postgres',
-          password: dockerMasterPassword,
+          password: DbSecrets.master,
         ),
         settings: const ConnectionSettings(sslMode: SslMode.disable),
       );
@@ -194,6 +205,7 @@ class PostgresService {
 
   Future<void> connect() async {
     if (_connection != null && _connection!.isOpen) return;
+    _requireSecrets();
 
     print("🔌 Connecting to Database...");
     try {
@@ -203,7 +215,7 @@ class PostgresService {
           port: 55432,
           database: 'postgres',
           username: 'postgres',
-          password: dockerMasterPassword,
+          password: DbSecrets.master,
         ),
         settings: const ConnectionSettings(sslMode: SslMode.disable),
       );
@@ -225,10 +237,7 @@ class PostgresService {
     print("🔌 Database Disconnected");
   }
 
-  Future<void> connectExistingUser({
-    required String email,
-    required String userPassword,
-  }) async {
+  Future<void> connectExistingUser({required String email}) async {
     try {
       // 🚀 FIX: run schema migrations FIRST, using a proper superuser
       // connection, before establishing the normal per-user session below.
@@ -245,7 +254,7 @@ class PostgresService {
           port: 55432,
           database: 'postgres',
           username: safeUser,
-          password: userPassword,
+          password: DbSecrets.user,
         ),
         settings: const ConnectionSettings(sslMode: SslMode.disable),
       );
@@ -337,10 +346,8 @@ class PostgresService {
   // When the user first registers, this boots up the database, creates their
   // secure Postgres User Role, and runs the massive schema generation below.
 
-  Future<void> initializeUserDatabase({
-    required String email,
-    required String userPassword,
-  }) async {
+  Future<void> initializeUserDatabase({required String email}) async {
+    _requireSecrets();
     Connection? rootConn;
     int retries = 0;
     const int maxRetries = 100;
@@ -354,7 +361,7 @@ class PostgresService {
             port: 55432,
             database: 'postgres',
             username: 'postgres',
-            password: dockerMasterPassword,
+            password: DbSecrets.master,
           ),
           settings: const ConnectionSettings(
             sslMode: SslMode.disable,
@@ -387,7 +394,7 @@ class PostgresService {
         "SELECT 1 FROM pg_catalog.pg_roles WHERE rolname = '$safeUser'",
       );
       if (checkRole.isEmpty) {
-        final safePass = userPassword.replaceAll("'", "''");
+        final safePass = DbSecrets.user.replaceAll("'", "''");
         await rootConn.execute(
           "CREATE ROLE $safeUser LOGIN PASSWORD '$safePass'",
         );
@@ -413,7 +420,7 @@ class PostgresService {
           port: 55432,
           database: 'postgres',
           username: safeUser,
-          password: userPassword,
+          password: DbSecrets.user,
         ),
         settings: const ConnectionSettings(sslMode: SslMode.disable),
       );

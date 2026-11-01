@@ -2,6 +2,10 @@ import 'dart:io';
 import 'package:process_run/shell.dart';
 import 'package:flutter_secure_storage/flutter_secure_storage.dart';
 import '../updates/guptik_version.dart';
+import 'gateway_sources.dart';
+import 'db_secrets.dart';
+import 'account_config.dart';
+import '../node/node_secrets.dart';
 
 class DockerService {
 
@@ -37,6 +41,7 @@ class DockerService {
   }
 
   void setVaultPath(String path) => _vaultPath = path;
+  String? get vaultPath => _vaultPath;
 
   static const composeProject = 'guptik';
 
@@ -142,6 +147,7 @@ class DockerService {
       _vaultPath = existing.workingDir;
     }
     if (_vaultPath == null) throw Exception('No GupTik node on this PC');
+    await ensureNodeSecurity();
     Directory('$_vaultPath/gateway').createSync(recursive: true);
     final env = File('$_vaultPath/.env');
     var publicUrl = 'localhost:55000';
@@ -161,11 +167,9 @@ class DockerService {
   }
 
   Future<void> autoConfigure({
-    required String dbPass,
     required String tunnelToken,
     required String publicUrl,
     required String email,
-    required String userPassword,
   }) async {
     if (_vaultPath == null) throw Exception("Vault path is not initialized");
 
@@ -189,21 +193,35 @@ class DockerService {
       }
     }
 
-    final envFile = File('$_vaultPath/.env');
-    await envFile.writeAsString('''
-POSTGRES_PASSWORD=$dbPass
-POSTGRES_PORT=55432
-CF_TUNNEL_TOKEN=$tunnelToken
-PUBLIC_URL=$publicUrl
-VAULT_PATH=$_vaultPath
-''');
+    if (File('$_vaultPath/data/postgres/PG_VERSION').existsSync()) {
+      // Postgres only reads its password when it first creates the data folder, so a fresh
+      // random password could never match database files left by an older install.
+      throw Exception('Found database files from an earlier GupTik install in $_vaultPath/data/postgres '
+          'but no running node. Start that node once (so it can upgrade), or choose another folder.');
+    }
+
+    // Per-node random database secrets; nothing here is derived from the account password.
+    await DbSecrets.writeEnv(_vaultPath!, {
+      'DB_PASSWORD': DbSecrets.generate(),
+      'DB_USER_PASSWORD': DbSecrets.generate(),
+      'DB_SECRET_VERSION': DbSecrets.currentVersion,
+      'POSTGRES_PORT': '55432',
+      'CF_TUNNEL_TOKEN': tunnelToken,
+      'PUBLIC_URL': publicUrl,
+      'VAULT_PATH': _vaultPath!,
+    });
+    DbSecrets.loadFrom(_vaultPath!);
     await rememberVault(_vaultPath!);
 
     await _generateGatewayFiles(publicUrl);
     await writeNodeVersion();
 
-    final composeFile = File('$_vaultPath/docker-compose.yml');
-    await composeFile.writeAsString('''
+    await writeCompose();
+  }
+
+  /// The one docker-compose.yml template for a node. New installs and the
+  /// migration for existing installs both write this text.
+  static String _composeYaml() => '''
 name: guptik
 services:
   guptik-tunnel:
@@ -225,6 +243,15 @@ services:
       - ./gateway:/app
       - ./vault_files:/app/storage
     command: sh -c "dart pub get && dart run server.dart"
+    environment:
+      - DB_HOST=db
+      - DB_PASSWORD=\${DB_PASSWORD:?open the GupTik desktop app to finish the node update}
+      - GATEWAY_AUTH=\${GATEWAY_AUTH:-audit}
+      - OWNER_TOKEN_SHA256=\${OWNER_TOKEN_SHA256:-}
+      - VIEWER_SIGNING_KEY=\${VIEWER_SIGNING_KEY:-}
+      - ACCOUNT_SUPABASE_URL=${kAccountSupabaseUrl}
+      - ACCOUNT_SUPABASE_ANON_KEY=${kAccountSupabaseAnonKey}
+      - ACCOUNT_GUPTIK_URL=${kAccountGuptikUrl}
     depends_on:
       - db
 
@@ -234,10 +261,10 @@ services:
     image: postgres:15-alpine
     restart: always
     ports:
-      - "\${POSTGRES_PORT}:5432"
+      - "127.0.0.1:\${POSTGRES_PORT}:5432"
     environment:
       POSTGRES_USER: postgres
-      POSTGRES_PASSWORD: GuptikSystemPassword2026
+      POSTGRES_PASSWORD: \${DB_PASSWORD:?open the GupTik desktop app to finish the node update}
       POSTGRES_DB: postgres
     volumes:
       - ./data/postgres:/var/lib/postgresql/data
@@ -251,7 +278,171 @@ services:
     volumes:
       - ./data/osint:/app
     command: tail -f /dev/null
-''');
+''';
+
+  /// Writes docker-compose.yml (the previous file is kept as docker-compose.yml.bak).
+  Future<void> writeCompose() async {
+    if (_vaultPath == null) throw Exception('Vault path is not initialized');
+    if (!DbSecrets.readEnvSync(_vaultPath!).containsKey('DB_PASSWORD')) {
+      throw StateError('Refusing to write docker-compose.yml before DB_PASSWORD exists in .env');
+    }
+    final f = File('$_vaultPath/docker-compose.yml');
+    if (await f.exists()) await f.copy('$_vaultPath/docker-compose.yml.bak');
+    await f.writeAsString(_composeYaml());
+  }
+
+  // ---------------------------------------------------------------------------
+  // Node security migration: private Postgres, per-node DB secrets
+  // ---------------------------------------------------------------------------
+  static Future<void>? _securityRun;
+
+  /// Idempotent. Makes sure this node uses per-node database secrets (rotating
+  /// the old shared password on older installs), that Postgres is bound to
+  /// 127.0.0.1, and that compose + gateway files match this app version.
+  /// Cheap no-op once the node is current; needs Docker only when a change is due.
+  Future<void> ensureNodeSecurity() {
+    return _securityRun ??= _ensureNodeSecurity().whenComplete(() => _securityRun = null);
+  }
+
+  Future<void> _ensureNodeSecurity() async {
+    final existing = await findExistingStack();
+    if (existing != null) _vaultPath = existing.workingDir;
+    if (_vaultPath == null) throw Exception('No GupTik node on this PC');
+    final vault = _vaultPath!;
+    final project = existing?.project ?? composeProject;
+
+    var dirty = false;
+    if (!DbSecrets.loadFrom(vault)) {
+      await _rotateLegacyDbSecrets(vault, project);
+      dirty = true;
+    }
+
+    // Owner token for the desktop (plaintext in OS secure storage, hash + auth mode in .env).
+    final env = DbSecrets.readEnvSync(vault);
+    if (await NodeSecrets.ensureOwnerToken(env)) {
+      await DbSecrets.writeEnv(vault, env);
+      dirty = true;
+    }
+
+    final compose = File('$vault/docker-compose.yml');
+    final composeText = await compose.exists() ? await compose.readAsString() : '';
+    if (composeText != _composeYaml()) dirty = true;
+    if (dirty) await _rewriteNodeFiles(vault, project);
+  }
+
+  /// Current gateway auth mode from .env ('audit' or 'enforce').
+  Future<String> gatewayAuthMode() async {
+    final v = _vaultPath ?? (await findExistingStack())?.workingDir;
+    if (v == null) return 'audit';
+    return DbSecrets.readEnvSync(v)['GATEWAY_AUTH'] == 'enforce' ? 'enforce' : 'audit';
+  }
+
+  /// Switches the gateway between audit (log only) and enforce (block) and recreates it.
+  Future<void> setGatewayAuthMode({required bool enforce}) async {
+    final existing = await findExistingStack();
+    if (existing != null) _vaultPath = existing.workingDir;
+    final vault = _vaultPath;
+    if (vault == null) throw Exception('No GupTik node on this PC');
+    final env = DbSecrets.readEnvSync(vault);
+    env['GATEWAY_AUTH'] = enforce ? 'enforce' : 'audit';
+    await DbSecrets.writeEnv(vault, env);
+    final up = await _compose(vault, existing?.project ?? composeProject, ['up', '-d']);
+    if (up.exitCode != 0) throw Exception('docker compose up failed: ${up.stderr}');
+  }
+
+  /// Rewrites compose + gateway files and recreates the containers whose definition changed.
+  Future<void> _rewriteNodeFiles(String vault, String project) async {
+    var publicUrl = 'localhost:55000';
+    final pu = DbSecrets.readEnvSync(vault)['PUBLIC_URL'];
+    if (pu != null && pu.isNotEmpty) publicUrl = pu;
+    await writeCompose();
+    await _generateGatewayFiles(publicUrl);
+    await writeNodeVersion();
+    final up = await _compose(vault, project, ['up', '-d', '--build', '--remove-orphans']);
+    if (up.exitCode != 0) {
+      throw Exception('docker compose up failed: ${up.stderr}');
+    }
+  }
+
+  Future<ProcessResult> _compose(String vault, String project, List<String> args, {String? stdin}) async {
+    final p = await Process.start('docker', ['compose', '-p', project, ...args], workingDirectory: vault);
+    final out = p.stdout.fold<List<int>>([], (a, b) => a..addAll(b));
+    final err = p.stderr.fold<List<int>>([], (a, b) => a..addAll(b));
+    if (stdin != null) p.stdin.write(stdin);
+    await p.stdin.close();
+    final code = await p.exitCode;
+    return ProcessResult(p.pid, code, String.fromCharCodes(await out), String.fromCharCodes(await err));
+  }
+
+  /// One-time move off the shared database password that shipped in the old
+  /// source (it is public in git history, so it must be rotated, not just hidden).
+  ///
+  /// The old stack's `.env` holds the account password under POSTGRES_PASSWORD, so its
+  /// presence says nothing about the real database password; only DB_SECRET_VERSION=2 counts.
+  /// Rotation runs inside the db container over its local socket (trust auth), so it
+  /// needs no knowledge of the old password. Order: backup, write .env.pending, ALTER ROLE,
+  /// write .env (v2). A crash after ALTER ROLE is repaired from .env.pending on the next run.
+  Future<void> _rotateLegacyDbSecrets(String vault, String project) async {
+    final env = DbSecrets.readEnvSync(vault);
+    final pending = File('$vault/.env.pending');
+
+    // Make sure the db container is up (the old compose file is still in place).
+    final up = await _compose(vault, project, ['up', '-d', 'db']);
+    if (up.exitCode != 0) throw Exception('Could not start the database container: ${up.stderr}');
+    var ready = false;
+    for (var i = 0; i < 40 && !ready; i++) {
+      final r = await _compose(vault, project, ['exec', '-T', 'db', 'pg_isready', '-U', 'postgres']);
+      ready = r.exitCode == 0;
+      if (!ready) await Future.delayed(const Duration(seconds: 2));
+    }
+    if (!ready) throw Exception('Database container did not become ready');
+
+    String master, user;
+    if (await pending.exists()) {
+      // Resume an interrupted rotation with the same secrets.
+      final p = DbSecrets.parseEnv(await pending.readAsString());
+      master = p['DB_PASSWORD'] ?? DbSecrets.generate();
+      user = p['DB_USER_PASSWORD'] ?? DbSecrets.generate();
+    } else {
+      // 1. Backup before touching anything (owner-only file).
+      await Directory('$vault/backups').create(recursive: true);
+      final stamp = DateTime.now().toUtc().toIso8601String().replaceAll(RegExp(r'[^0-9]'), '').substring(0, 14);
+      final dump = await _compose(vault, project, ['exec', '-T', 'db', 'pg_dumpall', '-U', 'postgres']);
+      if (dump.exitCode != 0) throw Exception('Backup failed, password not rotated: ${dump.stderr}');
+      final backup = File('$vault/backups/pre-rotation-$stamp.sql');
+      await backup.writeAsString(dump.stdout.toString());
+      if (!Platform.isWindows) await Process.run('chmod', ['600', backup.path]);
+
+      master = DbSecrets.generate();
+      user = DbSecrets.generate();
+      // 2. Record the new secrets first so a crash cannot lose them.
+      await pending.writeAsString('DB_PASSWORD=$master\nDB_USER_PASSWORD=$user\n', flush: true);
+      if (!Platform.isWindows) await Process.run('chmod', ['600', pending.path]);
+    }
+
+    // 3. Change the passwords (hex values only, so the SQL literals are safe).
+    final sql = '''
+ALTER ROLE postgres WITH PASSWORD '$master';
+DO \$\$
+DECLARE r record;
+BEGIN
+  FOR r IN SELECT rolname FROM pg_roles WHERE rolcanlogin AND NOT rolsuper AND rolname NOT LIKE 'pg\\_%' LOOP
+    EXECUTE format('ALTER ROLE %I WITH PASSWORD %L', r.rolname, '$user');
+  END LOOP;
+END \$\$;
+''';
+    final alter = await _compose(vault, project, ['exec', '-T', 'db', 'psql', '-U', 'postgres', '-v', 'ON_ERROR_STOP=1'], stdin: sql);
+    if (alter.exitCode != 0) throw Exception('Password rotation failed: ${alter.stderr}');
+
+    // 4. Commit: new .env without the old password, then drop the pending file.
+    env.remove('POSTGRES_PASSWORD');
+    env['DB_PASSWORD'] = master;
+    env['DB_USER_PASSWORD'] = user;
+    env['DB_SECRET_VERSION'] = DbSecrets.currentVersion;
+    env.putIfAbsent('POSTGRES_PORT', () => '55432');
+    await DbSecrets.writeEnv(vault, env);
+    if (await pending.exists()) await pending.delete();
+    DbSecrets.set(master: master, user: user);
   }
 
 Future<void> _generateGatewayFiles(String publicUrl) async {
@@ -259,7 +450,7 @@ Future<void> _generateGatewayFiles(String publicUrl) async {
     await pubspec.writeAsString('''
 name: guptik_gateway
 environment: {sdk: '>=3.0.0 <4.0.0'}
-dependencies: {shelf: ^1.4.0, shelf_router: ^1.1.0, http: ^1.1.0, mime: ^1.0.4, postgres: ^3.4.0, uuid: ^4.3.3}
+dependencies: {shelf: ^1.4.0, shelf_router: ^1.1.0, http: ^1.1.0, mime: ^1.0.4, postgres: ^3.4.0, uuid: ^4.3.3, crypto: ^3.0.3, pointycastle: ^3.9.1}
 ''');
 
     final dockerfile = File('$_vaultPath/gateway/Dockerfile');
@@ -268,6 +459,9 @@ FROM dart:stable
 # 🚀 THE INSTANT SPEED HACK: Copies a pre-compiled static binary in seconds 
 COPY --from=mwader/static-ffmpeg:6.1.1 /ffmpeg /usr/local/bin/
 ''');
+
+    await File('$_vaultPath/gateway/gateway_auth.dart').writeAsString(kGatewayAuthDart);
+    await File('$_vaultPath/gateway/gateway_account.dart').writeAsString(kGatewayAccountDart);
 
     final server = File('$_vaultPath/gateway/server.dart');
 
@@ -283,6 +477,7 @@ import 'package:http/http.dart' as http;
 import 'package:mime/mime.dart';
 import 'package:postgres/postgres.dart';
 import 'package:uuid/uuid.dart';
+import 'gateway_auth.dart';
 
 // 🚀 Top-level global memory (Above main)
 String currentAiProvider = "OpenRouter";
@@ -304,7 +499,8 @@ void main() async {
 
   router.get('/internal/media/<filename>', (Request req, String filename) async {
     try {
-      final file = File('/app/storage/$filename');
+      try { safeStorageName(filename); } on FormatException { return Response.badRequest(body: 'Invalid file name.'); }
+      final file = storageFile(filename);
       if (!await file.exists()) return Response.notFound('File not found.');
       
       final fileSize = await file.length();
@@ -351,7 +547,8 @@ void main() async {
     IOSink? sink;
     try {
       filename = Uri.decodeComponent(filename);
-      final file = File('/app/storage/$filename');
+      try { safeStorageName(filename); } on FormatException { return Response.badRequest(body: 'Invalid file name.'); }
+      final file = storageFile(filename);
       sink = file.openWrite();
       await sink.addStream(req.read());
       await sink.flush();
@@ -362,7 +559,7 @@ void main() async {
 
       try {
         final connection = await Connection.open(
-          Endpoint(host: 'db', port: 5432, database: 'postgres', username: 'postgres', password: 'GuptikSystemPassword2026'),
+          dbEndpoint(),
           settings: const ConnectionSettings(sslMode: SslMode.disable),
         );
         await connection.execute(
@@ -384,11 +581,12 @@ void main() async {
   router.get('/vault/files/<filename>', (Request req, String filename) async {
     try {
       filename = Uri.decodeComponent(filename);
+      try { safeStorageName(filename); } on FormatException { return Response.badRequest(body: 'Invalid file name.'); }
       final token = req.url.queryParameters['token'];
       final email = req.url.queryParameters['email'];
 
       final connection = await Connection.open(
-        Endpoint(host: 'db', port: 5432, database: 'postgres', username: 'postgres', password: 'GuptikSystemPassword2026'),
+        dbEndpoint(),
         settings: const ConnectionSettings(sslMode: SslMode.disable),
       );
 
@@ -399,18 +597,22 @@ void main() async {
       await connection.close();
 
       Future<Response> serve() async {
-        final file = File('/app/storage/$filename');
+        final file = storageFile(filename);
         if (!await file.exists()) return Response.notFound('File not found.');
         final mimeType = lookupMimeType(file.path) ?? 'application/octet-stream';
         return Response.ok(file.openRead(), headers: {
           'Content-Type': mimeType,
           'Content-Length': (await file.length()).toString(),
-          'Content-Disposition': 'inline; filename="$filename"',
+          'Content-Disposition': 'inline; filename="${filename.replaceAll(RegExp(r'["\r\n]'), '_')}"',
         });
       }
 
-      // No share row = owner / Trust Me on this node.
-      if (result.isEmpty) return await serve();
+      // No share row = private: only the owner's desktop or a paired phone may read it.
+      // (In GATEWAY_AUTH=audit mode this is logged instead of refused.)
+      if (result.isEmpty) {
+        if (!trustedOrAudit(req)) return Response.forbidden('This file is private.');
+        return await serve();
+      }
 
       final row = result.first;
       final isPublic = row[0] as bool;
@@ -433,7 +635,7 @@ void main() async {
               <div style="background: #1E293B; padding: 40px; border-radius: 12px; text-align: center;">
                 <h2>Secure File Access</h2>
                 <form method="GET">
-                  <input type="hidden" name="token" value="${token ?? ''}" />
+                  <input type="hidden" name="token" value="${const HtmlEscape(HtmlEscapeMode.attribute).convert(token ?? '')}" />
                   <input type="email" name="email" placeholder="Enter email" required style="padding: 10px; margin-bottom: 10px; width: 100%;" />
                   <button type="submit" style="padding: 10px; width: 100%; background: #00E5FF; border: none; font-weight: bold;">Verify</button>
                 </form>
@@ -475,7 +677,7 @@ void main() async {
   router.get('/vault/system-folder/<type>', (Request request, String type) async {
     try {
       final connection = await Connection.open(
-        Endpoint(host: 'db', port: 5432, database: 'postgres', username: 'postgres', password: 'GuptikSystemPassword2026'),
+        dbEndpoint(),
         settings: const ConnectionSettings(sslMode: SslMode.disable),
       );
 
@@ -617,7 +819,7 @@ void main() async {
       final payload = await req.readAsString();
       final data = jsonDecode(payload);
       final connection = await Connection.open(
-        Endpoint(host: 'db', port: 5432, database: 'postgres', username: 'postgres', password: 'GuptikSystemPassword2026'),
+        dbEndpoint(),
         settings: const ConnectionSettings(sslMode: SslMode.disable),
       );
       await connection.execute(
@@ -634,10 +836,11 @@ void main() async {
 
   router.delete('/vault/delete/<filename>', (Request req, String filename) async {
     try {
-      final file = File('/app/storage/$filename');
+      try { safeStorageName(filename); } on FormatException { return Response.badRequest(body: 'Invalid file name.'); }
+      final file = storageFile(filename);
       if (await file.exists()) await file.delete();
       final connection = await Connection.open(
-        Endpoint(host: 'db', port: 5432, database: 'postgres', username: 'postgres', password: 'GuptikSystemPassword2026'),
+        dbEndpoint(),
         settings: const ConnectionSettings(sslMode: SslMode.disable),
       );
       await connection.execute(Sql.named("DELETE FROM vault_files WHERE file_name = @fn"), parameters: {'fn': filename});
@@ -653,7 +856,7 @@ void main() async {
   router.get('/api/sessions', (Request req) async {
     try {
       final connection = await Connection.open(
-        Endpoint(host: 'db', port: 5432, database: 'postgres', username: 'postgres', password: 'GuptikSystemPassword2026'),
+        dbEndpoint(),
         settings: const ConnectionSettings(sslMode: SslMode.disable),
       );
       
@@ -681,7 +884,7 @@ void main() async {
   router.get('/api/history/<sessionId>', (Request req, String sessionId) async {
     try {
       final connection = await Connection.open(
-        Endpoint(host: 'db', port: 5432, database: 'postgres', username: 'postgres', password: 'GuptikSystemPassword2026'),
+        dbEndpoint(),
         settings: const ConnectionSettings(sslMode: SslMode.disable),
       );
       
@@ -709,7 +912,7 @@ void main() async {
       final data = jsonDecode(payload);
       
       final connection = await Connection.open(
-        Endpoint(host: 'db', port: 5432, database: 'postgres', username: 'postgres', password: 'GuptikSystemPassword2026'),
+        dbEndpoint(),
         settings: const ConnectionSettings(sslMode: SslMode.disable),
       );
 
@@ -734,7 +937,7 @@ void main() async {
   router.get('/api/ai-config', (Request req) async {
     try {
       final connection = await Connection.open(
-        Endpoint(host: 'db', port: 5432, database: 'postgres', username: 'postgres', password: 'GuptikSystemPassword2026'),
+        dbEndpoint(),
         settings: const ConnectionSettings(sslMode: SslMode.disable),
       );
 
@@ -773,7 +976,7 @@ void main() async {
       final data = jsonDecode(payload);
 
       final connection = await Connection.open(
-        Endpoint(host: 'db', port: 5432, database: 'postgres', username: 'postgres', password: 'GuptikSystemPassword2026'),
+        dbEndpoint(),
         settings: const ConnectionSettings(sslMode: SslMode.disable),
       );
 
@@ -823,7 +1026,7 @@ void main() async {
 
   Future<Map<String, String>> _readAiConfig() async {
     final connection = await Connection.open(
-      Endpoint(host: 'db', port: 5432, database: 'postgres', username: 'postgres', password: 'GuptikSystemPassword2026'),
+      dbEndpoint(),
       settings: const ConnectionSettings(sslMode: SslMode.disable),
     );
     await connection.execute("CREATE TABLE IF NOT EXISTS system_ai_config (key TEXT PRIMARY KEY, value TEXT)");
@@ -858,7 +1061,7 @@ void main() async {
     try {
       final data = jsonDecode(await req.readAsString()) as Map;
       final connection = await Connection.open(
-        Endpoint(host: 'db', port: 5432, database: 'postgres', username: 'postgres', password: 'GuptikSystemPassword2026'),
+        dbEndpoint(),
         settings: const ConnectionSettings(sslMode: SslMode.disable),
       );
       await connection.execute("CREATE TABLE IF NOT EXISTS system_ai_config (key TEXT PRIMARY KEY, value TEXT)");
@@ -948,7 +1151,7 @@ void main() async {
       final data = jsonDecode(payload);
       
       final connection = await Connection.open(
-        Endpoint(host: 'db', port: 5432, database: 'postgres', username: 'postgres', password: 'GuptikSystemPassword2026'),
+        dbEndpoint(),
         settings: const ConnectionSettings(sslMode: SslMode.disable),
       );
 
@@ -979,7 +1182,7 @@ void main() async {
       final senderId = req.headers['x-sender-id'] ?? 'unknown';
 
       final connection = await Connection.open(
-        Endpoint(host: 'db', port: 5432, database: 'postgres', username: 'postgres', password: 'GuptikSystemPassword2026'),
+        dbEndpoint(),
         settings: const ConnectionSettings(sslMode: SslMode.disable),
       );
 
@@ -1057,7 +1260,7 @@ void main() async {
       final conversationId = data['conversation_id'];
       
       final connection = await Connection.open(
-        Endpoint(host: 'db', port: 5432, database: 'postgres', username: 'postgres', password: 'GuptikSystemPassword2026'),
+        dbEndpoint(),
         settings: const ConnectionSettings(sslMode: SslMode.disable),
       );
 
@@ -1112,7 +1315,7 @@ void main() async {
 
       if (response.statusCode == 200) {
         final dc = await Connection.open(
-          Endpoint(host: 'db', port: 5432, database: 'postgres', username: 'postgres', password: 'GuptikSystemPassword2026'),
+          dbEndpoint(),
           settings: const ConnectionSettings(sslMode: SslMode.disable),
         );
         await dc.execute(
@@ -1133,7 +1336,7 @@ void main() async {
         final payload = await req.readAsString();
         final data = jsonDecode(payload);
         final sc = await Connection.open(
-          Endpoint(host: 'db', port: 5432, database: 'postgres', username: 'postgres', password: 'GuptikSystemPassword2026'),
+          dbEndpoint(),
           settings: const ConnectionSettings(sslMode: SslMode.disable),
         );
         final contentStr = (data['content'] as String? ?? '');
@@ -1155,7 +1358,7 @@ void main() async {
       final contentType = req.headers['x-content-type'] ?? 'media';
 
       final connection = await Connection.open(
-        Endpoint(host: 'db', port: 5432, database: 'postgres', username: 'postgres', password: 'GuptikSystemPassword2026'),
+        dbEndpoint(),
         settings: const ConnectionSettings(sslMode: SslMode.disable),
       );
 
@@ -1173,7 +1376,7 @@ void main() async {
 
       final messageId = uuid.v4();
       final filename = '${messageId}.$ext';
-      final file = File('/app/storage/$filename');
+      final file = storageFile(filename);
       final sink = file.openWrite();
       await sink.addStream(req.read());
       await sink.flush();
@@ -1214,14 +1417,14 @@ void main() async {
       final contentType = req.headers['x-content-type'] ?? 'media';
 
       final filename = '${messageId}.$ext';
-      final file = File('/app/storage/$filename');
+      final file = storageFile(filename);
       final sink = file.openWrite();
       await sink.addStream(req.read());
       await sink.flush();
       await sink.close();
 
       final connection = await Connection.open(
-        Endpoint(host: 'db', port: 5432, database: 'postgres', username: 'postgres', password: 'GuptikSystemPassword2026'),
+        dbEndpoint(),
         settings: const ConnectionSettings(sslMode: SslMode.disable),
       );
 
@@ -1253,7 +1456,7 @@ void main() async {
   router.get('/internal/messages/<conversationId>', (Request req, String conversationId) async {
     try {
       final connection = await Connection.open(
-        Endpoint(host: 'db', port: 5432, database: 'postgres', username: 'postgres', password: 'GuptikSystemPassword2026'),
+        dbEndpoint(),
         settings: const ConnectionSettings(sslMode: SslMode.disable),
       );
 
@@ -1296,7 +1499,7 @@ void main() async {
       final conversationId = data['conversation_id'];
 
       final connection = await Connection.open(
-        Endpoint(host: 'db', port: 5432, database: 'postgres', username: 'postgres', password: 'GuptikSystemPassword2026'),
+        dbEndpoint(),
         settings: const ConnectionSettings(sslMode: SslMode.disable),
       );
 
@@ -1338,7 +1541,7 @@ void main() async {
       final conversationId = data['conversation_id'];
 
       final connection = await Connection.open(
-        Endpoint(host: 'db', port: 5432, database: 'postgres', username: 'postgres', password: 'GuptikSystemPassword2026'),
+        dbEndpoint(),
         settings: const ConnectionSettings(sslMode: SslMode.disable),
       );
 
@@ -1384,7 +1587,7 @@ void main() async {
       final data = jsonDecode(payload);
       
       final connection = await Connection.open(
-        Endpoint(host: 'db', port: 5432, database: 'postgres', username: 'postgres', password: 'GuptikSystemPassword2026'),
+        dbEndpoint(),
         settings: const ConnectionSettings(sslMode: SslMode.disable),
       );
       await connection.execute(
@@ -1404,7 +1607,7 @@ void main() async {
       final data = jsonDecode(payload);
       
       final connection = await Connection.open(
-        Endpoint(host: 'db', port: 5432, database: 'postgres', username: 'postgres', password: 'GuptikSystemPassword2026'),
+        dbEndpoint(),
         settings: const ConnectionSettings(sslMode: SslMode.disable),
       );
       await connection.execute(
@@ -1421,7 +1624,7 @@ void main() async {
   router.get('/internal/conversations', (Request req) async {
     try {
       final connection = await Connection.open(
-        Endpoint(host: 'db', port: 5432, database: 'postgres', username: 'postgres', password: 'GuptikSystemPassword2026'),
+        dbEndpoint(),
         settings: const ConnectionSettings(sslMode: SslMode.disable),
       );
 
@@ -1455,7 +1658,7 @@ void main() async {
   router.get('/internal/conversation/<conversationId>/contact', (Request req, String conversationId) async {
     try {
       final connection = await Connection.open(
-        Endpoint(host: 'db', port: 5432, database: 'postgres', username: 'postgres', password: 'GuptikSystemPassword2026'),
+        dbEndpoint(),
         settings: const ConnectionSettings(sslMode: SslMode.disable),
       );
       final result = await connection.execute(
@@ -1478,7 +1681,7 @@ void main() async {
       final customName = data['custom_name'];
 
       final connection = await Connection.open(
-        Endpoint(host: 'db', port: 5432, database: 'postgres', username: 'postgres', password: 'GuptikSystemPassword2026'),
+        dbEndpoint(),
         settings: const ConnectionSettings(sslMode: SslMode.disable),
       );
 
@@ -1504,7 +1707,7 @@ void main() async {
   router.get('/internal/handshake/pending', (Request req) async {
     try {
       final connection = await Connection.open(
-        Endpoint(host: 'db', port: 5432, database: 'postgres', username: 'postgres', password: 'GuptikSystemPassword2026'),
+        dbEndpoint(),
         settings: const ConnectionSettings(sslMode: SslMode.disable),
       );
       final result = await connection.execute("SELECT id, counterpart_username FROM tm_pending_requests WHERE status = 'pending'");
@@ -1537,7 +1740,7 @@ void main() async {
 
   router.post('/internal/finalise_connection', (Request req) async {
     final connection = await Connection.open(
-      Endpoint(host: 'db', port: 5432, database: 'postgres', username: 'postgres', password: 'GuptikSystemPassword2026'),
+      dbEndpoint(),
       settings: const ConnectionSettings(sslMode: SslMode.disable),
     );
 
@@ -1618,7 +1821,7 @@ void main() async {
   router.post('/internal/conversation/<conversationId>/read', (Request req, String conversationId) async {
     try {
       final connection = await Connection.open(
-        Endpoint(host: 'db', port: 5432, database: 'postgres', username: 'postgres', password: 'GuptikSystemPassword2026'),
+        dbEndpoint(),
         settings: const ConnectionSettings(sslMode: SslMode.disable),
       );
 
@@ -1686,7 +1889,7 @@ void main() async {
         return Response.badRequest(body: 'Missing message_id');
       }
       final conn = await Connection.open(
-        Endpoint(host: 'db', port: 5432, database: 'postgres', username: 'postgres', password: 'GuptikSystemPassword2026'),
+        dbEndpoint(),
         settings: const ConnectionSettings(sslMode: SslMode.disable),
       );
       await conn.execute(
@@ -1707,7 +1910,7 @@ void main() async {
       final messageIds = (data['message_ids'] as List?)?.map((e) => e.toString()).toList() ?? [];
       if (messageIds.isEmpty) return Response.badRequest(body: 'Missing message_ids');
       final conn = await Connection.open(
-        Endpoint(host: 'db', port: 5432, database: 'postgres', username: 'postgres', password: 'GuptikSystemPassword2026'),
+        dbEndpoint(),
         settings: const ConnectionSettings(sslMode: SslMode.disable),
       );
       for (final mid in messageIds) {
@@ -1730,7 +1933,7 @@ void main() async {
   router.get('/player/video/stream/<videoId>', (Request req, String videoId) async {
     try {
       final connection = await Connection.open(
-        Endpoint(host: 'db', port: 5432, database: 'postgres', username: 'postgres', password: 'GuptikSystemPassword2026'),
+        dbEndpoint(),
         settings: const ConnectionSettings(sslMode: SslMode.disable),
       );
       
@@ -1796,7 +1999,7 @@ void main() async {
       final payload = await req.readAsString();
       final data = jsonDecode(payload);
       final connection = await Connection.open(
-        Endpoint(host: 'db', port: 5432, database: 'postgres', username: 'postgres', password: 'GuptikSystemPassword2026'),
+        dbEndpoint(),
         settings: const ConnectionSettings(sslMode: SslMode.disable),
       );
 
@@ -1851,7 +2054,7 @@ void main() async {
       final payload = await req.readAsString();
       final data = jsonDecode(payload);
       final connection = await Connection.open(
-        Endpoint(host: 'db', port: 5432, database: 'postgres', username: 'postgres', password: 'GuptikSystemPassword2026'),
+        dbEndpoint(),
         settings: const ConnectionSettings(sslMode: SslMode.disable),
       );
       
@@ -1893,7 +2096,7 @@ void main() async {
   router.get('/player/video/comments/<videoId>', (Request req, String videoId) async {
     try {
       final connection = await Connection.open(
-        Endpoint(host: 'db', port: 5432, database: 'postgres', username: 'postgres', password: 'GuptikSystemPassword2026'),
+        dbEndpoint(),
         settings: const ConnectionSettings(sslMode: SslMode.disable),
       );
 
@@ -2001,7 +2204,7 @@ void main() async {
   router.get('/player/video/comments/<videoId>/replies/<parentId>', (Request req, String videoId, String parentId) async {
     try {
       final connection = await Connection.open(
-        Endpoint(host: 'db', port: 5432, database: 'postgres', username: 'postgres', password: 'GuptikSystemPassword2026'),
+        dbEndpoint(),
         settings: const ConnectionSettings(sslMode: SslMode.disable),
       );
 
@@ -2062,7 +2265,7 @@ void main() async {
       }
 
       final connection = await Connection.open(
-        Endpoint(host: 'db', port: 5432, database: 'postgres', username: 'postgres', password: 'GuptikSystemPassword2026'),
+        dbEndpoint(),
         settings: const ConnectionSettings(sslMode: SslMode.disable),
       );
 
@@ -2099,7 +2302,7 @@ void main() async {
       final deleterUid = data['deleter_uid']?.toString() ?? '';
 
       final connection = await Connection.open(
-        Endpoint(host: 'db', port: 5432, database: 'postgres', username: 'postgres', password: 'GuptikSystemPassword2026'),
+        dbEndpoint(),
         settings: const ConnectionSettings(sslMode: SslMode.disable),
       );
 
@@ -2152,7 +2355,7 @@ void main() async {
       }
 
       final connection = await Connection.open(
-        Endpoint(host: 'db', port: 5432, database: 'postgres', username: 'postgres', password: 'GuptikSystemPassword2026'),
+        dbEndpoint(),
         settings: const ConnectionSettings(sslMode: SslMode.disable),
       );
 
@@ -2227,7 +2430,7 @@ void main() async {
       final reason = data['reason']?.toString() ?? 'Other';
 
       final connection = await Connection.open(
-        Endpoint(host: 'db', port: 5432, database: 'postgres', username: 'postgres', password: 'GuptikSystemPassword2026'),
+        dbEndpoint(),
         settings: const ConnectionSettings(sslMode: SslMode.disable),
       );
 
@@ -2251,7 +2454,7 @@ void main() async {
   router.get('/player/video/stickers/<videoId>', (Request req, String videoId) async {
     try {
       final connection = await Connection.open(
-        Endpoint(host: 'db', port: 5432, database: 'postgres', username: 'postgres', password: 'GuptikSystemPassword2026'),
+        dbEndpoint(),
         settings: const ConnectionSettings(sslMode: SslMode.disable),
       );
 
@@ -2306,7 +2509,7 @@ void main() async {
   router.get('/player/video/thumbnail/<videoId>', (Request req, String videoId) async {
     try {
       final connection = await Connection.open(
-        Endpoint(host: 'db', port: 5432, database: 'postgres', username: 'postgres', password: 'GuptikSystemPassword2026'),
+        dbEndpoint(),
         settings: const ConnectionSettings(sslMode: SslMode.disable),
       );
       
@@ -2388,7 +2591,7 @@ void main() async {
   router.get('/watch/<videoId>', (Request req, String videoId) async {
     try {
       final connection = await Connection.open(
-        Endpoint(host: 'db', port: 5432, database: 'postgres', username: 'postgres', password: 'GuptikSystemPassword2026'),
+        dbEndpoint(),
         settings: const ConnectionSettings(sslMode: SslMode.disable),
       );
 
@@ -2442,7 +2645,7 @@ void main() async {
       final payload = await req.readAsString();
       final data = jsonDecode(payload);
       final connection = await Connection.open(
-        Endpoint(host: 'db', port: 5432, database: 'postgres', username: 'postgres', password: 'GuptikSystemPassword2026'),
+        dbEndpoint(),
         settings: const ConnectionSettings(sslMode: SslMode.disable),
       );
 
@@ -2490,7 +2693,7 @@ void main() async {
   router.get('/player/video/history/list', (Request req) async {
     try {
       final connection = await Connection.open(
-        Endpoint(host: 'db', port: 5432, database: 'postgres', username: 'postgres', password: 'GuptikSystemPassword2026'),
+        dbEndpoint(),
         settings: const ConnectionSettings(sslMode: SslMode.disable),
       );
 
@@ -2551,7 +2754,7 @@ void main() async {
       final payload = await req.readAsString();
       final data = jsonDecode(payload);
       final connection = await Connection.open(
-        Endpoint(host: 'db', port: 5432, database: 'postgres', username: 'postgres', password: 'GuptikSystemPassword2026'),
+        dbEndpoint(),
         settings: const ConnectionSettings(sslMode: SslMode.disable),
       );
       
@@ -2596,7 +2799,7 @@ void main() async {
   router.get('/player/video/saved/list', (Request req) async {
     try {
       final connection = await Connection.open(
-        Endpoint(host: 'db', port: 5432, database: 'postgres', username: 'postgres', password: 'GuptikSystemPassword2026'),
+        dbEndpoint(),
         settings: const ConnectionSettings(sslMode: SslMode.disable),
       );
       final result = await connection.execute("""
@@ -2654,7 +2857,7 @@ void main() async {
       final payload = await req.readAsString();
       final data = jsonDecode(payload);
       final connection = await Connection.open(
-        Endpoint(host: 'db', port: 5432, database: 'postgres', username: 'postgres', password: 'GuptikSystemPassword2026'),
+        dbEndpoint(),
         settings: const ConnectionSettings(sslMode: SslMode.disable),
       );
 
@@ -2695,7 +2898,7 @@ void main() async {
   router.get('/player/video/stats/<videoId>', (Request req, String videoId) async {
     try {
       final connection = await Connection.open(
-        Endpoint(host: 'db', port: 5432, database: 'postgres', username: 'postgres', password: 'GuptikSystemPassword2026'),
+        dbEndpoint(),
         settings: const ConnectionSettings(sslMode: SslMode.disable),
       );
       
@@ -2752,7 +2955,7 @@ void main() async {
   router.get('/channel/profile/<channelId>', (Request req, String channelId) async {
     try {
       final connection = await Connection.open(
-        Endpoint(host: 'db', port: 5432, database: 'postgres', username: 'postgres', password: 'GuptikSystemPassword2026'),
+        dbEndpoint(),
         settings: const ConnectionSettings(sslMode: SslMode.disable),
       );
       
@@ -2777,7 +2980,7 @@ void main() async {
   router.get('/channel/videos/<channelId>', (Request req, String channelId) async {
     try {
       final connection = await Connection.open(
-        Endpoint(host: 'db', port: 5432, database: 'postgres', username: 'postgres', password: 'GuptikSystemPassword2026'),
+        dbEndpoint(),
         settings: const ConnectionSettings(sslMode: SslMode.disable),
       );
       
@@ -2790,6 +2993,7 @@ void main() async {
           FROM mp_videos v
           LEFT JOIN mp_channels c ON v.channel_id = c.channel_id
           WHERE v.channel_id = @cid AND v.is_deleted = false
+          ${(principalOf(req)?.isScoped ?? false) ? "AND COALESCE(v.visibility, 'public') = 'public'" : ""}
           ORDER BY v.upload_timestamp DESC
         """),
         parameters: {'cid': channelId}
@@ -2832,7 +3036,7 @@ void main() async {
       final payload = await req.readAsString();
       final data = jsonDecode(payload);
       final connection = await Connection.open(
-        Endpoint(host: 'db', port: 5432, database: 'postgres', username: 'postgres', password: 'GuptikSystemPassword2026'),
+        dbEndpoint(),
         settings: const ConnectionSettings(sslMode: SslMode.disable),
       );
       
@@ -2854,7 +3058,7 @@ void main() async {
       final payload = await req.readAsString();
       final data = jsonDecode(payload);
       final connection = await Connection.open(
-        Endpoint(host: 'db', port: 5432, database: 'postgres', username: 'postgres', password: 'GuptikSystemPassword2026'),
+        dbEndpoint(),
         settings: const ConnectionSettings(sslMode: SslMode.disable),
       );
 
@@ -2898,7 +3102,7 @@ void main() async {
       final payload = await req.readAsString();
       final data = jsonDecode(payload);
       final connection = await Connection.open(
-        Endpoint(host: 'db', port: 5432, database: 'postgres', username: 'postgres', password: 'GuptikSystemPassword2026'),
+        dbEndpoint(),
         settings: const ConnectionSettings(sslMode: SslMode.disable),
       );
 
@@ -2984,7 +3188,7 @@ void main() async {
       final bool? interested = data['interested'];
 
       final connection = await Connection.open(
-        Endpoint(host: 'db', port: 5432, database: 'postgres', username: 'postgres', password: 'GuptikSystemPassword2026'),
+        dbEndpoint(),
         settings: const ConnectionSettings(sslMode: SslMode.disable),
       );
 
@@ -3020,7 +3224,7 @@ void main() async {
   router.get('/player/video/interest/<videoId>/<watcherUid>', (Request req, String videoId, String watcherUid) async {
     try {
       final connection = await Connection.open(
-        Endpoint(host: 'db', port: 5432, database: 'postgres', username: 'postgres', password: 'GuptikSystemPassword2026'),
+        dbEndpoint(),
         settings: const ConnectionSettings(sslMode: SslMode.disable),
       );
       final result = await connection.execute(
@@ -3045,7 +3249,7 @@ void main() async {
       final subscriberUid = data['subscriber_uid'];
 
       final connection = await Connection.open(
-        Endpoint(host: 'db', port: 5432, database: 'postgres', username: 'postgres', password: 'GuptikSystemPassword2026'),
+        dbEndpoint(),
         settings: const ConnectionSettings(sslMode: SslMode.disable),
       );
 
@@ -3091,7 +3295,7 @@ void main() async {
   router.get('/channel/subscribe/status/<channelId>/<subscriberUid>', (Request req, String channelId, String subscriberUid) async {
     try {
       final connection = await Connection.open(
-        Endpoint(host: 'db', port: 5432, database: 'postgres', username: 'postgres', password: 'GuptikSystemPassword2026'),
+        dbEndpoint(),
         settings: const ConnectionSettings(sslMode: SslMode.disable),
       );
 
@@ -3111,7 +3315,7 @@ void main() async {
     try {
       final cid = req.url.queryParameters['channel_id'] ?? '';
       final connection = await Connection.open(
-        Endpoint(host: 'db', port: 5432, database: 'postgres', username: 'postgres', password: 'GuptikSystemPassword2026'),
+        dbEndpoint(),
         settings: const ConnectionSettings(sslMode: SslMode.disable),
       );
       final result = await connection.execute(
@@ -3141,7 +3345,7 @@ void main() async {
     try {
       final data = jsonDecode(await req.readAsString());
       final connection = await Connection.open(
-        Endpoint(host: 'db', port: 5432, database: 'postgres', username: 'postgres', password: 'GuptikSystemPassword2026'),
+        dbEndpoint(),
         settings: const ConnectionSettings(sslMode: SslMode.disable),
       );
       final result = await connection.execute(
@@ -3166,7 +3370,7 @@ void main() async {
   router.get('/player/playlists/<playlistId>/videos', (Request req, String playlistId) async {
     try {
       final connection = await Connection.open(
-        Endpoint(host: 'db', port: 5432, database: 'postgres', username: 'postgres', password: 'GuptikSystemPassword2026'),
+        dbEndpoint(),
         settings: const ConnectionSettings(sslMode: SslMode.disable),
       );
       final result = await connection.execute(
@@ -3198,7 +3402,7 @@ void main() async {
     try {
       final cid = req.url.queryParameters['channel_id'] ?? '';
       final connection = await Connection.open(
-        Endpoint(host: 'db', port: 5432, database: 'postgres', username: 'postgres', password: 'GuptikSystemPassword2026'),
+        dbEndpoint(),
         settings: const ConnectionSettings(sslMode: SslMode.disable),
       );
       final result = await connection.execute(
@@ -3229,7 +3433,7 @@ void main() async {
       final List contacts = data['contacts'] ?? [];
       final bool replace = data['replace'] == true;
       final connection = await Connection.open(
-        Endpoint(host: 'db', port: 5432, database: 'postgres', username: 'postgres', password: 'GuptikSystemPassword2026'),
+        dbEndpoint(),
         settings: const ConnectionSettings(sslMode: SslMode.disable),
       );
       if (replace) {
@@ -3351,7 +3555,7 @@ void main() async {
   router.get('/contacts', (Request req) async {
     try {
       final connection = await Connection.open(
-        Endpoint(host: 'db', port: 5432, database: 'postgres', username: 'postgres', password: 'GuptikSystemPassword2026'),
+        dbEndpoint(),
         settings: const ConnectionSettings(sslMode: SslMode.disable),
       );
       final result = await connection.execute("""
@@ -3389,7 +3593,7 @@ void main() async {
   };
 
   Future<Connection> _storeDb() => Connection.open(
-    Endpoint(host: 'db', port: 5432, database: 'postgres', username: 'postgres', password: 'GuptikSystemPassword2026'),
+    dbEndpoint(),
     settings: const ConnectionSettings(sslMode: SslMode.disable),
   );
 
@@ -3544,7 +3748,7 @@ void main() async {
 
       // Connect internally to your containerized Postgres database cluster first
       final connection = await Connection.open(
-        Endpoint(host: 'db', port: 5432, database: 'postgres', username: 'postgres', password: 'GuptikSystemPassword2026'),
+        dbEndpoint(),
         settings: const ConnectionSettings(sslMode: SslMode.disable),
       );
 
@@ -3582,7 +3786,7 @@ void main() async {
 
       // 🚀 TARGET PATH DESIGN: Matches your video streaming fallback criteria perfectly!
       final filename = "$videoId.mp4";
-      final file = File('/app/storage/$filename');
+      final file = storageFile(filename);
       
       // 🚀 THE FIX: Use addStream instead of pipe to handle the byte stream correctly
       final sink = file.openWrite();
@@ -3664,7 +3868,7 @@ void main() async {
     final bodyBytes = await req.read().expand((chunk) => chunk).toList();
     if (bodyBytes.isNotEmpty) {
       final filename = 'sticker_${DateTime.now().millisecondsSinceEpoch}.png';
-      final file = File('/app/storage/$filename');
+      final file = storageFile(filename);
       await file.writeAsBytes(bodyBytes);
       final baseUrl = '${req.requestedUri.scheme}://${req.requestedUri.host}:${req.requestedUri.port}';
       imagePath = '$baseUrl/internal/media/$filename';
@@ -3672,7 +3876,7 @@ void main() async {
 
     // Insert into local Postgres — same table/columns as desktop's addProductSticker()
     final connection = await Connection.open(
-      Endpoint(host: 'db', port: 5432, database: 'postgres', username: 'postgres', password: 'GuptikSystemPassword2026'),
+      dbEndpoint(),
       settings: const ConnectionSettings(sslMode: SslMode.disable),
     );
 
@@ -3717,7 +3921,7 @@ void main() async {
       final payload = await req.readAsString();
       final data = jsonDecode(payload);
       final connection = await Connection.open(
-        Endpoint(host: 'db', port: 5432, database: 'postgres', username: 'postgres', password: 'GuptikSystemPassword2026'),
+        dbEndpoint(),
         settings: const ConnectionSettings(sslMode: SslMode.disable),
       );
       
@@ -3740,7 +3944,7 @@ void main() async {
       final payload = await req.readAsString();
       final data = jsonDecode(payload);
       final connection = await Connection.open(
-        Endpoint(host: 'db', port: 5432, database: 'postgres', username: 'postgres', password: 'GuptikSystemPassword2026'),
+        dbEndpoint(),
         settings: const ConnectionSettings(sslMode: SslMode.disable),
       );
       
@@ -3760,7 +3964,7 @@ void main() async {
       final payload = await req.readAsString();
       final data = jsonDecode(payload);
       final connection = await Connection.open(
-        Endpoint(host: 'db', port: 5432, database: 'postgres', username: 'postgres', password: 'GuptikSystemPassword2026'),
+        dbEndpoint(),
         settings: const ConnectionSettings(sslMode: SslMode.disable),
       );
       
@@ -3785,7 +3989,7 @@ void main() async {
   Timer.periodic(const Duration(seconds: 10), (timer) async {
     try {
       final conn = await Connection.open(
-        Endpoint(host: 'db', port: 5432, database: 'postgres', username: 'postgres', password: 'GuptikSystemPassword2026'),
+        dbEndpoint(),
         settings: const ConnectionSettings(sslMode: SslMode.disable),
       );
       
@@ -3834,7 +4038,16 @@ void main() async {
     } catch (e) {}
   });
 
-  final handler = Pipeline().addMiddleware(logRequests()).addHandler(router.call);
+  // Authentication: GATEWAY_AUTH=audit (default) logs what would be denied; enforce blocks it.
+  gatewayEnforce = (Platform.environment['GATEWAY_AUTH'] ?? 'audit') == 'enforce';
+  final authStore = AuthStore.fromEnv();
+  registerAuthRoutes(router, authStore);
+  print('Gateway auth mode: ${gatewayEnforce ? 'ENFORCE' : 'AUDIT (logging only, not blocking)'}');
+
+  final handler = Pipeline()
+      .addMiddleware(logRequests())
+      .addMiddleware(gatewayAuth(authStore))
+      .addHandler(router.call);
   final server = await serve(handler, InternetAddress.anyIPv4, 8080);
   print('Gateway listening on port ${server.port}');
 }

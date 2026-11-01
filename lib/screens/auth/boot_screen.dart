@@ -32,7 +32,8 @@ class _BootScreenState extends State<BootScreen> {
       final prefs = await SharedPreferences.getInstance();
       var vaultPath = prefs.getString('vault_path');
       final email = prefs.getString('user_email');
-      final password = prefs.getString('user_password');
+      // The account password is no longer kept on this PC; drop any copy left by older versions.
+      await prefs.remove('user_password');
 
       if (vaultPath == null) {
         final existing = await DockerService.findExistingStack();
@@ -43,7 +44,7 @@ class _BootScreenState extends State<BootScreen> {
         }
       }
 
-      if (vaultPath == null || email == null || password == null) {
+      if (vaultPath == null || email == null) {
         throw Exception("Corrupt session data");
       }
 
@@ -61,10 +62,9 @@ class _BootScreenState extends State<BootScreen> {
       bool connected = false;
       while (retries < 15) {
         try {
-          await PostgresService().connectExistingUser(
-            email: email,
-            userPassword: password,
-          );
+          // Moves older nodes to private Postgres + per-node secrets (no-op when current).
+          await DockerService().ensureNodeSecurity();
+          await PostgresService().connectExistingUser(email: email);
           connected = true;
           break;
         } catch (e) {

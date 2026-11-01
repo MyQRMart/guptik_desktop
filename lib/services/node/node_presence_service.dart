@@ -12,6 +12,8 @@ class NodePresenceService {
 
   Timer? _beat;
   String? deviceId;
+  /// Last tunnel/LAN URL this node published (used when building pairing links).
+  String? lastPublicUrl;
 
   Future<void> start() async {
     final user = Supabase.instance.client.auth.currentUser;
@@ -76,6 +78,7 @@ class NodePresenceService {
       final publicUrl = looksTunnel
           ? current
           : (storedTunnel.isNotEmpty ? storedTunnel : lan);
+      lastPublicUrl = publicUrl;
 
       await Supabase.instance.client.from('desktop_devices').upsert({
         'device_id': deviceId,

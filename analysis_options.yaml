@@ -1,6 +1,7 @@
 analyzer:
   exclude:
     - build/**
+    - tool/gateway_test/**   # scratch-project tests, run by tool/gateway_test/run.sh
     - web/**
     - windows/**
     - macos/**

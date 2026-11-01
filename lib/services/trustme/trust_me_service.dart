@@ -4,6 +4,7 @@ import 'package:flutter_secure_storage/flutter_secure_storage.dart';
 import 'package:http/http.dart' as http;
 import 'package:web_socket_channel/web_socket_channel.dart';
 import 'package:guptik_desktop/services/admin/admin_shim.dart';
+import '../node/node_http.dart';
 
 class TrustMeService {
   static TrustMeService? _instance;
@@ -48,7 +49,7 @@ class TrustMeService {
   Future<Map<String, dynamic>> generateHandshakeCode(
     String targetUsername,
   ) async {
-    final response = await http.post(
+    final response = await nodeHttp.post(
       Uri.parse('$_gatewayUrl/internal/handshake/generate'),
       headers: {'Content-Type': 'application/json'},
       body: jsonEncode({'target_username': targetUsername}),
@@ -231,7 +232,7 @@ class TrustMeService {
     required String signedPreKey,
     required int signedPreKeyId,
   }) async {
-    final response = await http.post(
+    final response = await nodeHttp.post(
       Uri.parse('$_gatewayUrl/internal/finalise_connection'),
       headers: {'Content-Type': 'application/json'},
       body: jsonEncode({
@@ -267,7 +268,7 @@ class TrustMeService {
 
   // Fetch conversations from local DB for side list
   Future<List<ConversationSummary>> getConversations() async {
-    final response = await http.get(
+    final response = await nodeHttp.get(
       Uri.parse('$_gatewayUrl/internal/conversations'),
     );
 
@@ -298,7 +299,7 @@ class TrustMeService {
                      
     final myUsername = authName ?? await const FlutterSecureStorage().read(key: 'current_username') ?? 'Me';
 
-    final response = await http.post(
+    final response = await nodeHttp.post(
       Uri.parse('$_gatewayUrl/internal/message/send'),
       headers: {'Content-Type': 'application/json'},
       body: jsonEncode({
@@ -314,7 +315,7 @@ class TrustMeService {
 
   Future<bool> editMessage({required String conversationId, required String messageId, required String newContent}) async {
     try {
-      final response = await http.post(
+      final response = await nodeHttp.post(
         Uri.parse('$_gatewayUrl/internal/message/edit'),
         headers: {'Content-Type': 'application/json'},
         body: jsonEncode({'conversation_id': conversationId, 'message_id': messageId, 'new_content': newContent}),
@@ -327,7 +328,7 @@ class TrustMeService {
 
   Future<bool> deleteMessage({required String conversationId, required String messageId, required bool forEveryone}) async {
     try {
-      final response = await http.post(
+      final response = await nodeHttp.post(
         Uri.parse('$_gatewayUrl/internal/message/delete'),
         headers: {'Content-Type': 'application/json'},
         body: jsonEncode({'conversation_id': conversationId, 'message_id': messageId, 'for_everyone': forEveryone}),
@@ -377,7 +378,7 @@ class TrustMeService {
     );
 
     // 4. Send and wait for the Gateway to say it was delivered
-    final response = await request.send();
+    final response = await nodeHttp.send(request);
     final responseBody = await response.stream.bytesToString();
 
     if (response.statusCode != 200) {
@@ -390,7 +391,7 @@ class TrustMeService {
   // Crash-proof message fetching!
   Future<List<Map<String, dynamic>>> getMessages(String conversationId) async {
     try {
-      final response = await http.get(
+      final response = await nodeHttp.get(
         Uri.parse('$_gatewayUrl/internal/messages/$conversationId'),
       );
 
@@ -409,7 +410,7 @@ class TrustMeService {
   // Fetch contact_id + current names for a conversation
   Future<Map<String, dynamic>?> getContactForConversation(String conversationId) async {
     try {
-      final response = await http.get(
+      final response = await nodeHttp.get(
         Uri.parse('$_gatewayUrl/internal/conversation/$conversationId/contact'),
       );
       if (response.statusCode != 200) return null;
@@ -425,7 +426,7 @@ class TrustMeService {
     required String customName,
   }) async {
     try {
-      final response = await http.post(
+      final response = await nodeHttp.post(
         Uri.parse('$_gatewayUrl/internal/contact/rename'),
         headers: {'Content-Type': 'application/json'},
         body: jsonEncode({'conversation_id': conversationId, 'custom_name': customName}),
@@ -439,7 +440,7 @@ class TrustMeService {
   // Tell the local Gateway to clear the unread badge
   Future<void> markConversationAsRead(String conversationId) async {
     try {
-      await http.post(
+      await nodeHttp.post(
         Uri.parse('$_gatewayUrl/internal/conversation/$conversationId/read'),
       );
     } catch (e) {

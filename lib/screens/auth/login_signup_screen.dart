@@ -212,16 +212,17 @@ class _LoginSignupScreenState extends State<LoginSignupScreen> {
       await prefs.setBool('is_logged_in', true);
       await prefs.setString('vault_path', existing.workingDir);
       await prefs.setString('user_email', email);
-      await prefs.setString('user_password', password);
+      await prefs.remove('user_password'); // never keep the account password on disk
       await DockerService.rememberVault(existing.workingDir);
       DockerService().setVaultPath(existing.workingDir);
       if (!existing.running || !await DockerService.gatewayUp()) {
         await DockerService().startStack(build: false);
       }
+      await DockerService().ensureNodeSecurity();
       try {
-        await PostgresService().connectExistingUser(email: email, userPassword: password);
+        await PostgresService().connectExistingUser(email: email);
       } catch (_) {
-        await PostgresService().initializeUserDatabase(email: email, userPassword: password);
+        await PostgresService().initializeUserDatabase(email: email);
       }
       if (!mounted) return;
       Navigator.pushReplacement(context, MaterialPageRoute(builder: (_) => const HomeControlScreen()));

@@ -4,6 +4,7 @@ import 'package:lucide_flutter/lucide_flutter.dart';
 import '../../models/mediaplayer/player_video_model.dart';
 import '../../services/mediaplayer/player_api_service.dart';
 import 'desktop_upload__screen.dart'; // 🚀 Added to open the upload screen
+import '../../widgets/node_image.dart';
 
 class CreatorProfileScreen extends StatefulWidget {
   final String creatorUid;
@@ -251,7 +252,7 @@ class _CreatorProfileScreenState extends State<CreatorProfileScreen> {
                   child: SizedBox(
                     width: video.isReel ? 50 : 120, 
                     height: video.isReel ? 88 : 68,
-                    child: Image.network(
+                    child: NodeImage(
                       thumbnailUrl,
                       fit: BoxFit.cover,
                       errorBuilder: (ctx, err, stk) => Container(color: Colors.grey.shade800),

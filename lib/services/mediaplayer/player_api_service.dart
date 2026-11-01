@@ -1,10 +1,10 @@
 import 'dart:convert';
-import 'package:http/http.dart' as http;
 import 'package:flutter/foundation.dart';
 import 'package:guptik_desktop/services/admin/admin_shim.dart';
 import '../../models/mediaplayer/player_video_model.dart';
 import '../../models/mediaplayer/video_sticker_model.dart';
 import 'live_node_feed.dart';
+import '../node/node_http.dart';
 
 class PlayerApiService {
   // The specific Cloudflare Tunnel URL or Localhost IP for the creator's node
@@ -121,7 +121,7 @@ class PlayerApiService {
       // Ensure the URL is safely formatted (adds https:// if missing from Cloudflare tunnels)
       final safeUrl = gatewayUrl!.startsWith('http') ? gatewayUrl : 'https://$gatewayUrl';
       
-      final response = await http.post(
+      final response = await nodeHttp.post(
         Uri.parse('$safeUrl/player/video/like'),
         headers: {'Content-Type': 'application/json'},
         body: jsonEncode({
@@ -159,7 +159,7 @@ class PlayerApiService {
   ) async {
     if (gatewayUrl == null) return false;
     try {
-      final response = await http.post(
+      final response = await nodeHttp.post(
         Uri.parse('$gatewayUrl/player/video/comment'),
         headers: {'Content-Type': 'application/json'},
         body: jsonEncode({'video_id': videoId, 'creator_uid': creatorUid, 'comment_text': commentText,'parent_comment_id': parentCommentId,
@@ -173,7 +173,7 @@ class PlayerApiService {
   Future<bool> logWatchHistory(String videoId, String creatorUid, int duration, double percent, String sessionId) async {
     if (gatewayUrl == null) return false;
     try {
-      final response = await http.post(
+      final response = await nodeHttp.post(
         Uri.parse('$gatewayUrl/player/video/history'),
         headers: {'Content-Type': 'application/json'},
         body: jsonEncode({
@@ -193,7 +193,7 @@ class PlayerApiService {
   Future<bool> saveVideo(String videoId, String creatorUid) async {
     if (gatewayUrl == null) return false;
     try {
-      final response = await http.post(
+      final response = await nodeHttp.post(
         Uri.parse('$gatewayUrl/player/video/save'),
         headers: {'Content-Type': 'application/json'},
         body: jsonEncode({
@@ -222,7 +222,7 @@ class PlayerApiService {
     if (gatewayUrl == null) return false;
     try {
       final safeUrl = gatewayUrl!.startsWith('http') ? gatewayUrl : 'https://$gatewayUrl';
-      final response = await http.post(
+      final response = await nodeHttp.post(
         Uri.parse('$safeUrl/player/video/repost'),
         headers: {'Content-Type': 'application/json'},
         body: jsonEncode({
@@ -263,7 +263,7 @@ class PlayerApiService {
     if (gatewayUrl == null) return false;
     try {
       final safeUrl = gatewayUrl!.startsWith('http') ? gatewayUrl : 'https://$gatewayUrl';
-      final response = await http.post(
+      final response = await nodeHttp.post(
         Uri.parse('$safeUrl/player/video/share'),
         headers: {'Content-Type': 'application/json'},
         body: jsonEncode({
@@ -289,7 +289,7 @@ class PlayerApiService {
   Future<List<dynamic>> fetchComments(String videoId) async {
     if (gatewayUrl == null) return [];
     try {
-      final response = await http.get(
+      final response = await nodeHttp.get(
         Uri.parse('$gatewayUrl/player/video/comments/$videoId'),
         headers: {'Content-Type': 'application/json'},
       );
@@ -309,7 +309,7 @@ class PlayerApiService {
   Future<Map<String, dynamic>?> fetchVideoStats(String videoId) async {
     if (gatewayUrl == null) return null;
     try {
-      final response = await http.get(
+      final response = await nodeHttp.get(
         Uri.parse('$gatewayUrl/player/video/stats/$videoId'),
         headers: {'Content-Type': 'application/json'},
       );
@@ -334,7 +334,7 @@ class PlayerApiService {
       final safeUrl = gatewayUrl!.startsWith('http')
           ? gatewayUrl
           : 'https://$gatewayUrl';
-      final response = await http.get(
+      final response = await nodeHttp.get(
         Uri.parse('$safeUrl/player/video/stickers/$videoId'),
         headers: {'Content-Type': 'application/json'},
       );
@@ -358,7 +358,7 @@ class PlayerApiService {
       final safeUrl = gatewayUrl!.startsWith('http') ? gatewayUrl : 'https://$gatewayUrl';
       
       // 1. Tell Docker about the view and pass the User ID for the Gatekeeper
-      final response = await http.post(
+      final response = await nodeHttp.post(
         Uri.parse('$safeUrl/player/video/view'),
         headers: {'Content-Type': 'application/json'},
         body: jsonEncode({
@@ -406,7 +406,7 @@ class PlayerApiService {
       // nodes instead of blindly assuming https://, which caused HandshakeExceptions)
       final safeUrl = _sanitizeUrl(nodeUrl) ?? nodeUrl;
       
-      final response = await http.get(Uri.parse('$safeUrl/channel/profile/$channelId'));
+      final response = await nodeHttp.get(Uri.parse('$safeUrl/channel/profile/$channelId'));
       if (response.statusCode == 200) {
         return jsonDecode(response.body);
       }
@@ -422,7 +422,7 @@ class PlayerApiService {
     try {
       final safeUrl = _sanitizeUrl(nodeUrl) ?? nodeUrl;
       
-      final response = await http.get(Uri.parse('$safeUrl/channel/videos/$channelId'));
+      final response = await nodeHttp.get(Uri.parse('$safeUrl/channel/videos/$channelId'));
       
       // 🚀 NEW: Print exactly what Docker tells Flutter!
       debugPrint('📡 DOCKER RESPONSE CODE: ${response.statusCode}');
@@ -445,7 +445,7 @@ class PlayerApiService {
     if (gatewayUrl == null) return false;
     try {
       final safeUrl = gatewayUrl!.startsWith('http') ? gatewayUrl : 'https://$gatewayUrl';
-      final response = await http.post(
+      final response = await nodeHttp.post(
         Uri.parse('$safeUrl/player/video/delete'),
         headers: {'Content-Type': 'application/json'},
         body: jsonEncode({'video_id': videoId, 'creator_uid': creatorUid}),
@@ -470,7 +470,7 @@ class PlayerApiService {
   Future<bool> checkSubscriptionStatus(String nodeUrl, String channelId, String subscriberUid) async {
     try {
       final safeUrl = _sanitizeUrl(nodeUrl) ?? nodeUrl;
-      final response = await http.get(Uri.parse('$safeUrl/channel/subscribe/status/$channelId/$subscriberUid'));
+      final response = await nodeHttp.get(Uri.parse('$safeUrl/channel/subscribe/status/$channelId/$subscriberUid'));
       if (response.statusCode == 200) {
         return jsonDecode(response.body)['is_subscribed'] ?? false;
       }
@@ -493,7 +493,7 @@ class PlayerApiService {
     if (gatewayUrl == null) return false;
     try {
       final safeUrl = gatewayUrl!.startsWith('http') ? gatewayUrl : 'https://$gatewayUrl';
-      final response = await http.post(
+      final response = await nodeHttp.post(
         Uri.parse('$safeUrl/player/video/interest'),
         headers: {'Content-Type': 'application/json'},
         body: jsonEncode({
@@ -519,7 +519,7 @@ class PlayerApiService {
     if (gatewayUrl == null) return null;
     try {
       final safeUrl = gatewayUrl!.startsWith('http') ? gatewayUrl : 'https://$gatewayUrl';
-      final response = await http.get(
+      final response = await nodeHttp.get(
         Uri.parse('$safeUrl/player/video/interest/$videoId/$watcherUid'),
         headers: {'Content-Type': 'application/json'},
       );
@@ -570,7 +570,7 @@ class PlayerApiService {
       final safeUrl = _sanitizeUrl(nodeUrl) ?? nodeUrl;
       
       // 1. Tell the Local Docker Node
-      final response = await http.post(
+      final response = await nodeHttp.post(
         Uri.parse('$safeUrl/channel/subscribe/toggle'),
         headers: {'Content-Type': 'application/json'},
         body: jsonEncode({'channel_id': channelId, 'subscriber_uid': subscriberUid})
@@ -587,14 +587,18 @@ class PlayerApiService {
             'channel_id': channelId
           });
           // Update global channel count
-          await supabase.rpc('increment_subscriber_count', params: {'cid': channelId}); 
+          try {
+            await supabase.rpc('increment_subscriber_count', params: {'cid': channelId});
+          } catch (_) {/* count is cosmetic; the subscription row is already saved */}
         } else {
           await supabase.from('mp_subscriptions').delete().match({
             'subscriber_uid': subscriberUid,
             'channel_id': channelId
           });
           // Decrease global channel count
-          await supabase.rpc('decrement_subscriber_count', params: {'cid': channelId});
+          try {
+            await supabase.rpc('decrement_subscriber_count', params: {'cid': channelId});
+          } catch (_) {/* count is cosmetic; the subscription row is already removed */}
         }
         
         return isSubscribed;

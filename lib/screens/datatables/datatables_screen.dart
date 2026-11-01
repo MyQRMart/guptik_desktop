@@ -1,7 +1,7 @@
 import 'package:flutter/material.dart';
 import '../../services/external/postgres_service.dart';
 import 'datatables_logic.dart';
-import 'package:http/http.dart' as http;
+import '../../services/node/node_http.dart';
 
 class DatatablesScreen extends StatefulWidget {
   const DatatablesScreen({super.key});
@@ -720,7 +720,7 @@ class _DatatablesScreenState extends State<DatatablesScreen> {
                                                     );
 
                                                     // Tell the Docker Gateway to delete the file AND the database row!
-                                                    final response = await http
+                                                    final response = await nodeHttp
                                                         .delete(
                                                           Uri.parse(
                                                             'http://localhost:55000/vault/delete/$fileName',

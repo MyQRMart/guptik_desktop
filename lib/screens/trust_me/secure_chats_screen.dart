@@ -7,6 +7,8 @@ import 'package:guptik_desktop/services/admin/admin_shim.dart';
 import 'package:video_player/video_player.dart';
 import 'package:http/http.dart' as http; 
 import '../../services/trustme/trust_me_service.dart';
+import '../../services/node/node_http.dart';
+import '../../widgets/node_image.dart';
 
 // ─────────────────────────────────────────────────────────────────────────────
 // HELPERS
@@ -119,7 +121,7 @@ class _SecureChatsScreenState extends State<SecureChatsScreen> {
         var url = contact['url'].toString();
         if (!url.startsWith('http')) url = 'https://$url';
 
-        final res = await http.get(Uri.parse(url)).timeout(const Duration(seconds: 3));
+        final res = await nodeHttp.get(Uri.parse(url)).timeout(const Duration(seconds: 3));
         if (mounted) {
           setState(() {
             _selectedChat!.isOnline = (res.statusCode == 200);
@@ -1210,7 +1212,7 @@ class _SecureChatsScreenState extends State<SecureChatsScreen> {
         children: [
           ClipRRect(
             borderRadius: BorderRadius.circular(12),
-            child: Image.network(
+            child: NodeImage(
               url,
               width: 260,
               height: 220,
@@ -1284,7 +1286,7 @@ class _SecureChatsScreenState extends State<SecureChatsScreen> {
               child: InteractiveViewer(
                 minScale: 0.5,
                 maxScale: 5.0,
-                child: Image.network(url,
+                child: NodeImage(url,
                     fit: BoxFit.contain,
             errorBuilder: (_, a, b) => const Icon(
                         Icons.broken_image,
@@ -1755,7 +1757,7 @@ class _VideoPlayerDialogState extends State<_VideoPlayerDialog> {
   Future<void> _init() async {
     try {
       _controller =
-          VideoPlayerController.networkUrl(Uri.parse(widget.url));
+          VideoPlayerController.networkUrl(Uri.parse(widget.url), httpHeaders: NodeHttp.headersFor(widget.url));
       await _controller!.initialize();
       _controller!.addListener(() {
         if (mounted) setState(() {});
