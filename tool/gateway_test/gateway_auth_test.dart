@@ -2,32 +2,7 @@ import 'dart:convert';
 import 'package:shelf/shelf.dart';
 import 'package:test/test.dart';
 import '../lib/gateway_auth.dart';
-
-class FakeDir implements DeviceDirectory {
-  final rows = <String, DeviceRow>{};
-  final public = <String, bool>{};
-  int finds = 0;
-  @override
-  Future<DeviceRow?> find(String id) async {
-    finds++;
-    return rows[id];
-  }
-  @override
-  Future<void> touch(String id) async {}
-  @override
-  Future<void> create(String id, String name, String h) async => rows[id] = DeviceRow(id, name, h, null, null);
-  @override
-  Future<bool> revoke(String id) async {
-    final r = rows[id];
-    if (r == null) return false;
-    rows[id] = DeviceRow(r.id, r.name, r.secretSha256, null, DateTime.now());
-    return true;
-  }
-  @override
-  Future<List<DeviceRow>> list() async => rows.values.toList();
-  @override
-  Future<bool> videoIsPublic(String v) async => public[v] ?? false;
-}
+import 'fake_dir.dart';
 
 const vid = '11111111-2222-3333-4444-555555555555';
 
@@ -69,10 +44,13 @@ void main() {
     expect(classify('GET', '/watch/$vid'), RouteClass.viewer);
     expect(classify('GET', '/player/video/stream/$vid'), RouteClass.viewer);
     expect(classify('GET', '/channel/videos/c1'), RouteClass.viewer);
-    expect(classify('POST', '/player/video/like'), RouteClass.device);
+    expect(classify('POST', '/player/video/like'), RouteClass.social);
+    expect(classify('POST', '/channel/subscribe/toggle'), RouteClass.social);
+    expect(classify('DELETE', '/player/video/comment/c1'), RouteClass.social);
+    expect(classify('GET', '/player/video/comments/$vid/replies/p1'), RouteClass.viewer);
     expect(classify('POST', '/player/video/upload'), RouteClass.device);
     expect(classify('POST', '/vault/upload/a.mp4'), RouteClass.device);
-    expect(classify('GET', '/player/video/comments/$vid'), RouteClass.device);
+    expect(classify('GET', '/player/video/comments/$vid'), RouteClass.viewer);
     expect(classify('DELETE', '/store/users'), RouteClass.device);
     expect(classify('GET', '/admin/devices'), RouteClass.owner);
     expect(classify('GET', '/internal/media/a.mp4'), RouteClass.device);
@@ -129,7 +107,7 @@ void main() {
     expect((await app(rq('POST', '/player/video/upload', h: v))).statusCode, 403);
     expect((await app(rq('POST', '/player/video/like', h: v))).statusCode, 403);
     expect((await app(rq('POST', '/channel/subscribe/toggle', h: v))).statusCode, 403);
-    expect((await app(rq('GET', '/player/video/comments/$vid', h: v))).statusCode, 403);
+    expect((await app(rq('GET', '/player/video/comments/$vid', h: v))).statusCode, 200); // comments are readable
     expect((await app(rq('GET', '/admin/devices', h: v))).statusCode, 403);
     // non public video
     dir.public[vid] = false;
