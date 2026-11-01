@@ -5,7 +5,7 @@ class GuptikVersion {
   GuptikVersion._();
 
   static const app = '0.2.0';
-  static const node = '20261029';
+  static const node = '20261101';
 
   static const githubRepo = 'MyQRMart/guptik_desktop';
 

@@ -9,6 +9,7 @@ const String kGatewayAuthDart = r'''
 //   * per-phone bearer tokens `gt1.<id>.<secret>` (only SHA-256(secret) is stored, table gw_devices)
 //   * an owner token `gt1.owner.<secret>` for the desktop app (hash in OWNER_TOKEN_SHA256)
 //   * short-lived signed anonymous viewer tokens `gv1.<exp>.<nonce>.<sig>` for read-only player routes
+//   * signed-in user account tokens (Supabase / guptik.com) for the social routes only, see gateway_account.dart
 //   * GATEWAY_AUTH=audit (default: log what would be denied) or GATEWAY_AUTH=enforce
 import 'dart:async';
 import 'dart:convert';
@@ -18,6 +19,7 @@ import 'package:crypto/crypto.dart';
 import 'package:postgres/postgres.dart';
 import 'package:shelf/shelf.dart';
 import 'package:shelf_router/shelf_router.dart';
+import 'gateway_account.dart';
 
 const String kStorageRoot = '/app/storage';
 
@@ -67,7 +69,7 @@ File storageFile(String name) {
 
 // ------------------------------------------------------------------ tokens
 
-enum Role { owner, device, viewer }
+enum Role { owner, device, viewer, account }
 
 class Principal {
   final Role role;
@@ -75,6 +77,9 @@ class Principal {
   final String name;
   const Principal(this.role, this.id, this.name);
   bool get isTrusted => role == Role.owner || role == Role.device;
+
+  /// Callers that only ever see public data (anonymous viewers and signed-in strangers).
+  bool get isScoped => role == Role.viewer || role == Role.account;
 }
 
 Principal? principalOf(Request r) => r.context['principal'] as Principal?;
@@ -265,16 +270,48 @@ class PgDeviceDirectory implements DeviceDirectory {
 
 // -------------------------------------------------------------- route table
 
-enum RouteClass { open, peer, viewer, device, owner }
+enum RouteClass { open, peer, viewer, social, device, owner }
 
-final RegExp _viewerPath = RegExp(r'^/(player/video/(stream|thumbnail|stickers|stats)|watch|channel/(profile|videos))/[^/]+$');
-final RegExp _videoScoped = RegExp(r'^/(?:player/video/(?:stream|thumbnail|stickers|stats)|watch)/([^/]+)$');
+final RegExp _viewerPath = RegExp(
+    r'^/(player/video/(stream|thumbnail|stickers|stats|comments)|watch|channel/(profile|videos))/[^/]+$|^/player/video/comments/[^/]+/replies/[^/]+$');
+final RegExp _videoScoped = RegExp(r'^/(?:player/video/(?:stream|thumbnail|stickers|stats|comments)|watch)/([^/]+)(?:/replies/[^/]+)?$');
+
+/// Social routes: a paired phone / the desktop, or a signed-in account (acting only as itself).
+/// Each entry names the JSON field that carries the actor id; for account callers the gateway
+/// overwrites that field with the verified user id.
+class _SocialRoute {
+  final String method;
+  final RegExp path;
+  final String? actorField;
+  final bool videoInBody;
+  const _SocialRoute(this.method, this.path, this.actorField, {this.videoInBody = false});
+}
+
+final List<_SocialRoute> _socialRoutes = [
+  _SocialRoute('POST', RegExp(r'^/player/video/like$'), 'creator_uid', videoInBody: true),
+  _SocialRoute('POST', RegExp(r'^/player/video/comment$'), 'creator_uid', videoInBody: true),
+  _SocialRoute('PUT', RegExp(r'^/player/video/comment/[^/]+$'), 'editor_uid'),
+  _SocialRoute('DELETE', RegExp(r'^/player/video/comment/[^/]+$'), 'deleter_uid'),
+  _SocialRoute('POST', RegExp(r'^/player/video/comment/[^/]+/react$'), 'reactor_uid'),
+  _SocialRoute('POST', RegExp(r'^/player/video/comment/[^/]+/report$'), 'reporter_uid'),
+  _SocialRoute('POST', RegExp(r'^/channel/subscribe/toggle$'), 'subscriber_uid'),
+  _SocialRoute('POST', RegExp(r'^/player/video/view$'), 'viewer_uid', videoInBody: true),
+  _SocialRoute('GET', RegExp(r'^/channel/subscribe/status/[^/]+/[^/]+$'), null),
+];
+
+_SocialRoute? _socialRouteFor(String method, String path) {
+  for (final r in _socialRoutes) {
+    if (r.method == method && r.path.hasMatch(path)) return r;
+  }
+  return null;
+}
 final RegExp _uuid = RegExp(r'^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$');
 
 /// Which kind of caller a route accepts. One table, so it is easy to audit.
 ///   open   - no token (landing page, viewer token issue, share links that check their own token)
 ///   peer   - other GupTik nodes (Trust Me); open until message signatures exist
 ///   viewer - read-only public player routes; an anonymous viewer token is enough
+///   social - like/comment/subscribe/view: also open to a signed-in account token (own identity only)
 ///   owner  - desktop owner token only
 ///   device - any paired phone or the desktop (everything else, including every write)
 RouteClass classify(String method, String rawPath) {
@@ -289,6 +326,7 @@ RouteClass classify(String method, String rawPath) {
   if (p.startsWith('/trustme/')) return RouteClass.peer;
   if (p == '/admin' || p.startsWith('/admin/')) return RouteClass.owner;
   if (m == 'GET' && _viewerPath.hasMatch(p)) return RouteClass.viewer;
+  if (_socialRouteFor(m, p) != null) return RouteClass.social;
   return RouteClass.device;
 }
 
@@ -298,6 +336,10 @@ class AuthStore {
   final String? ownerSha256;
   final ViewerTokens viewers;
   final DeviceDirectory directory;
+  final AccountAuth? accounts;
+  final RateLimiter attemptLimiter; // account token checks per IP (each may call out to Supabase)
+  final RateLimiter userLimiter; // social calls per verified user
+  final RateLimiter ipLimiter; // social calls per IP
   final Duration cacheTtl;
   final DateTime Function() _now;
   final Map<String, _Cached<DeviceRow?>> _devices = {};
@@ -308,14 +350,22 @@ class AuthStore {
     required this.ownerSha256,
     required this.viewers,
     required this.directory,
+    this.accounts,
+    RateLimiter? attemptLimiter,
+    RateLimiter? userLimiter,
+    RateLimiter? ipLimiter,
     this.cacheTtl = const Duration(seconds: 30),
     DateTime Function()? now,
-  }) : _now = now ?? DateTime.now;
+  })  : attemptLimiter = attemptLimiter ?? RateLimiter(120, now: now),
+        userLimiter = userLimiter ?? RateLimiter(120, now: now),
+        ipLimiter = ipLimiter ?? RateLimiter(240, now: now),
+        _now = now ?? DateTime.now;
 
   factory AuthStore.fromEnv() => AuthStore(
         ownerSha256: Platform.environment['OWNER_TOKEN_SHA256'],
         viewers: ViewerTokens.fromEnv(),
         directory: PgDeviceDirectory(),
+        accounts: AccountAuth.fromEnv(),
       );
 
   Future<Principal?> authenticate(Request req) async {
@@ -328,7 +378,7 @@ class AuthStore {
         return viewers.verify(token) ? const Principal(Role.viewer, 'viewer', 'Viewer') : null;
       }
       final parts = token.split('.');
-      if (parts.length != 3 || parts[0] != 'gt1') return null;
+      if (parts.length != 3 || parts[0] != 'gt1') return _account(req, token);
       final id = parts[1], hash = hashSecret(parts[2]);
       if (id == 'owner') {
         final o = ownerSha256;
@@ -343,6 +393,16 @@ class AuthStore {
       print('AUTH error: $e');
       return null;
     }
+  }
+
+  /// Any other bearer token may be a signed-in user's account token.
+  Future<Principal?> _account(Request req, String token) async {
+    final a = accounts;
+    if (a == null || !a.enabled) return null;
+    if (!attemptLimiter.allow('ip:${clientIp(req)}')) return null;
+    final who = await a.verify(token);
+    if (who == null) return null;
+    return Principal(Role.account, who.id, who.email.isEmpty ? 'Account' : who.email);
   }
 
   Future<DeviceRow?> _device(String id) async {
@@ -394,6 +454,48 @@ class _Cached<T> {
 
 // ---------------------------------------------------------------- middleware
 
+String clientIp(Request req) => req.headers['cf-connecting-ip'] ?? req.headers['x-forwarded-for'] ?? 'direct';
+
+/// For account callers on a social route: enforce limits and make the verified user id the actor.
+/// Returns the rewritten request, or a Response to send instead.
+Future<Object> _bindAccount(Request req, Principal who, String path, AuthStore store) async {
+  if (!store.userLimiter.allow('u:${who.id}') || !store.ipLimiter.allow('ip:${clientIp(req)}')) {
+    return Response(429, body: jsonEncode({'error': 'slow_down'}), headers: {'Content-Type': 'application/json', 'Retry-After': '30'});
+  }
+  final route = _socialRouteFor(req.method.toUpperCase(), path);
+  if (route == null) return req;
+  if (route.actorField == null) {
+    // GET /channel/subscribe/status/<channel>/<user>: only your own status.
+    final uid = Uri.decodeComponent(path.split('/').last);
+    return uid == who.id ? req : _json(403, {'error': 'forbidden'});
+  }
+  final contentLength = int.tryParse(req.headers['content-length'] ?? '') ?? 0;
+  if (contentLength > 65536) return _json(413, {'error': 'too_large'});
+  final raw = await req.readAsString();
+  if (raw.length > 65536) return _json(413, {'error': 'too_large'});
+  Map<String, dynamic> body;
+  try {
+    final d = raw.trim().isEmpty ? <String, dynamic>{} : jsonDecode(raw);
+    if (d is! Map) return _json(400, {'error': 'bad_request'});
+    body = Map<String, dynamic>.from(d);
+  } catch (_) {
+    return _json(400, {'error': 'bad_request'});
+  }
+  if (route.videoInBody) {
+    final vid = body['video_id']?.toString() ?? '';
+    if (!await store.videoIsPublic(vid)) return _json(404, {'error': 'not_found'});
+  }
+  final text = body['comment_text'];
+  if (text != null && (text is! String || text.length > 4000)) return _json(400, {'error': 'bad_comment'});
+  final name = body['viewer_name'];
+  if (name is String && name.length > 60) body['viewer_name'] = name.substring(0, 60);
+  final reaction = body['reaction_type'];
+  if (reaction is String && reaction.length > 24) return _json(400, {'error': 'bad_reaction'});
+  body[route.actorField!] = who.id; // never trust a client-supplied identity
+  final out = jsonEncode(body);
+  return req.change(body: out, headers: {'content-length': utf8.encode(out).length.toString()});
+}
+
 Response _json(int code, Map<String, dynamic> body) =>
     Response(code, body: jsonEncode(body), headers: {'Content-Type': 'application/json'});
 
@@ -411,6 +513,9 @@ Middleware gatewayAuth(AuthStore store) => (Handler inner) => (Request req) asyn
         case RouteClass.viewer:
           allowed = principal != null;
           break;
+        case RouteClass.social:
+          allowed = principal != null && (principal.isTrusted || principal.role == Role.account);
+          break;
         case RouteClass.device:
           allowed = principal != null && principal.isTrusted;
           break;
@@ -419,11 +524,23 @@ Middleware gatewayAuth(AuthStore store) => (Handler inner) => (Request req) asyn
           break;
       }
 
-      // Viewer tokens only ever see public, non-deleted videos (enforced in every mode).
-      if (allowed && principal?.role == Role.viewer && cls == RouteClass.viewer) {
+      // Viewer and account tokens only ever see public, non-deleted videos (enforced in every mode).
+      if (allowed && (principal?.isScoped ?? false) && cls == RouteClass.viewer) {
         final m = _videoScoped.firstMatch(path);
         if (m != null && !await store.videoIsPublic(m.group(1)!)) {
           return _json(404, {'error': 'not_found'});
+        }
+      }
+
+      if (allowed && principal != null && principal.isScoped) {
+        if (cls == RouteClass.viewer) {
+          // Comment reads: a client-supplied x-viewer-uid is never trusted for scoped callers.
+          final uid = principal.role == Role.account ? principal.id : '';
+          req = req.change(headers: {'x-viewer-uid': uid});
+        } else if (cls == RouteClass.social && principal.role == Role.account) {
+          final r = await _bindAccount(req, principal, path, store);
+          if (r is Response) return r;
+          req = r as Request;
         }
       }
 
@@ -499,5 +616,299 @@ void registerAuthRoutes(Router router, AuthStore store) {
     final ok = await store.revokeDevice(id);
     return ok ? _json(200, {'status': 'revoked'}) : _json(404, {'error': 'not_found'});
   });
+}
+''';
+
+/// Account-token verification helpers (written next to gateway_auth.dart as gateway_account.dart).
+const String kGatewayAccountDart = r'''
+// gateway_account.dart - generated by the GupTik desktop app. Edits on the node are overwritten.
+//
+// Account tokens: lets a signed-in GupTik user act on THIS node for social routes only
+// (like, comment, subscribe, view, comment reads). No shared secret is stored on the node:
+//   * Supabase access tokens signed with an asymmetric key (ES256) are verified locally
+//     against the project's public JWKS.
+//   * Other Supabase tokens (e.g. legacy HS256) are validated by asking Supabase itself
+//     (GET /auth/v1/user with the public anon key). Results are cached briefly by token hash.
+//   * Tokens from the guptik.com admin backend are validated with GET /auth/me.
+// The verified user id is the only identity ever used as the actor.
+import 'dart:async';
+import 'dart:convert';
+import 'dart:io';
+import 'dart:typed_data';
+import 'package:crypto/crypto.dart';
+import 'package:http/http.dart' as http;
+import 'package:pointycastle/export.dart';
+
+class AccountIdentity {
+  final String id;
+  final String email;
+  final String provider;
+  final DateTime? expires;
+  const AccountIdentity(this.id, this.email, this.provider, this.expires);
+}
+
+abstract class AccountVerifier {
+  String get name;
+
+  /// True when this verifier is responsible for [token] (so other verifiers are not asked).
+  bool accepts(String token);
+  Future<AccountIdentity?> verify(String token);
+}
+
+final RegExp _accountUuid = RegExp(r'^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$');
+final RegExp _safeId = RegExp(r'^[A-Za-z0-9_.:@-]{1,128}$');
+
+Uint8List _b64uDecode(String s) => base64Url.decode(base64Url.normalize(s));
+
+Map<String, dynamic>? _jsonPart(String part) {
+  try {
+    final m = jsonDecode(utf8.decode(_b64uDecode(part)));
+    return m is Map<String, dynamic> ? m : null;
+  } catch (_) {
+    return null;
+  }
+}
+
+BigInt _bigInt(List<int> bytes) {
+  var r = BigInt.zero;
+  for (final b in bytes) {
+    r = (r << 8) | BigInt.from(b);
+  }
+  return r;
+}
+
+/// Verifies Supabase Auth access tokens for one project.
+class SupabaseAccountVerifier implements AccountVerifier {
+  final String baseUrl;
+  final String anonKey;
+  final http.Client _client;
+  final DateTime Function() _now;
+  final Duration jwksTtl;
+
+  Map<String, ECPublicKey> _keys = {};
+  DateTime? _keysAt;
+  DateTime? _lastFetch;
+
+  SupabaseAccountVerifier({
+    required String baseUrl,
+    required this.anonKey,
+    http.Client? client,
+    DateTime Function()? now,
+    this.jwksTtl = const Duration(hours: 1),
+  })  : baseUrl = baseUrl.endsWith('/') ? baseUrl.substring(0, baseUrl.length - 1) : baseUrl,
+        _client = client ?? http.Client(),
+        _now = now ?? DateTime.now;
+
+  @override
+  String get name => 'supabase';
+
+  String get issuer => '$baseUrl/auth/v1';
+
+  @override
+  bool accepts(String token) {
+    final parts = token.split('.');
+    if (parts.length != 3) return false;
+    final p = _jsonPart(parts[1]);
+    return p != null && p['iss'] == issuer;
+  }
+
+  @override
+  Future<AccountIdentity?> verify(String token) async {
+    final parts = token.split('.');
+    if (parts.length != 3) return null;
+    final header = _jsonPart(parts[0]);
+    final p = _jsonPart(parts[1]);
+    if (header == null || p == null) return null;
+    // Claim checks that apply to every path (also stop us forwarding foreign tokens to Supabase).
+    if (p['iss'] != issuer || p['aud'] != 'authenticated') return null;
+    final exp = p['exp'];
+    if (exp is! num) return null;
+    final expires = DateTime.fromMillisecondsSinceEpoch(exp.toInt() * 1000, isUtc: true);
+    if (!_now().toUtc().isBefore(expires)) return null;
+    final nbf = p['nbf'];
+    if (nbf is num && _now().toUtc().millisecondsSinceEpoch < nbf.toInt() * 1000 - 5000) return null;
+    final sub = p['sub'];
+    if (sub is! String || !_accountUuid.hasMatch(sub)) return null;
+    final email = (p['email'] ?? '').toString();
+
+    final alg = header['alg'];
+    if (alg == 'ES256') {
+      final key = await _keyFor(header['kid']?.toString());
+      if (key == null) return null;
+      if (!_verifyEs256(key, '${parts[0]}.${parts[1]}', parts[2])) return null;
+      return AccountIdentity(sub, email, name, expires);
+    }
+    if (alg == 'HS256' || alg == 'RS256') {
+      // No shared secret on nodes: ask Supabase whether this token is valid right now.
+      return _remote(token, sub, email, expires);
+    }
+    return null; // 'none' and anything else
+  }
+
+  Future<AccountIdentity?> _remote(String token, String sub, String email, DateTime expires) async {
+    try {
+      final r = await _client.get(Uri.parse('$baseUrl/auth/v1/user'), headers: {
+        'apikey': anonKey,
+        'Authorization': 'Bearer $token',
+      }).timeout(const Duration(seconds: 6));
+      if (r.statusCode != 200) return null;
+      final m = jsonDecode(r.body);
+      if (m is! Map || m['id']?.toString() != sub) return null;
+      return AccountIdentity(sub, (m['email'] ?? email).toString(), name, expires);
+    } catch (_) {
+      return null;
+    }
+  }
+
+  bool _verifyEs256(ECPublicKey key, String signingInput, String sigB64) {
+    try {
+      final sig = _b64uDecode(sigB64);
+      if (sig.length != 64) return false;
+      final signer = ECDSASigner(SHA256Digest())..init(false, PublicKeyParameter<ECPublicKey>(key));
+      return signer.verifySignature(
+        Uint8List.fromList(utf8.encode(signingInput)),
+        ECSignature(_bigInt(sig.sublist(0, 32)), _bigInt(sig.sublist(32))),
+      );
+    } catch (_) {
+      return false;
+    }
+  }
+
+  Future<ECPublicKey?> _keyFor(String? kid) async {
+    final fresh = _keysAt != null && _now().difference(_keysAt!) < jwksTtl;
+    if (fresh && kid != null && _keys.containsKey(kid)) return _keys[kid];
+    // Stale cache or unknown kid (key rotation): refetch, but at most once a minute.
+    final last = _lastFetch;
+    if (last == null || _now().difference(last) > const Duration(seconds: 60)) await _fetchKeys();
+    if (kid == null) return _keys.length == 1 ? _keys.values.first : null;
+    return _keys[kid];
+  }
+
+  Future<void> _fetchKeys() async {
+    _lastFetch = _now();
+    try {
+      final r = await _client.get(Uri.parse('$baseUrl/auth/v1/.well-known/jwks.json')).timeout(const Duration(seconds: 6));
+      if (r.statusCode != 200) return;
+      final list = (jsonDecode(r.body) as Map)['keys'];
+      final curve = ECCurve_secp256r1();
+      final out = <String, ECPublicKey>{};
+      for (final k in (list as List)) {
+        if (k is! Map || k['kty'] != 'EC' || k['crv'] != 'P-256') continue;
+        final kid = k['kid']?.toString() ?? '';
+        final x = _bigInt(_b64uDecode(k['x'].toString()));
+        final y = _bigInt(_b64uDecode(k['y'].toString()));
+        out[kid] = ECPublicKey(curve.curve.createPoint(x, y), curve);
+      }
+      _keys = out;
+      _keysAt = _now();
+    } catch (_) {
+      // keep whatever we had
+    }
+  }
+}
+
+/// Verifies tokens issued by the guptik.com admin backend (the desktop app's account system).
+class GuptikAccountVerifier implements AccountVerifier {
+  final String baseUrl;
+  final http.Client _client;
+  GuptikAccountVerifier({required String baseUrl, http.Client? client})
+      : baseUrl = baseUrl.endsWith('/') ? baseUrl.substring(0, baseUrl.length - 1) : baseUrl,
+        _client = client ?? http.Client();
+
+  @override
+  String get name => 'guptik';
+
+  @override
+  bool accepts(String token) => token.length <= 4096;
+
+  @override
+  Future<AccountIdentity?> verify(String token) async {
+    try {
+      final r = await _client.get(Uri.parse('$baseUrl/auth/me'), headers: {'Authorization': 'Bearer $token'}).timeout(const Duration(seconds: 6));
+      if (r.statusCode != 200) return null;
+      final m = jsonDecode(r.body);
+      final u = (m is Map) ? m['user'] : null;
+      if (u is! Map) return null;
+      final id = u['id']?.toString() ?? '';
+      if (!_safeId.hasMatch(id)) return null;
+      return AccountIdentity(id, (u['email'] ?? '').toString(), name, null);
+    } catch (_) {
+      return null;
+    }
+  }
+}
+
+class _Entry {
+  final AccountIdentity? who;
+  final DateTime until;
+  _Entry(this.who, this.until);
+}
+
+/// Picks the right verifier and caches results briefly, keyed by SHA-256 of the token
+/// (the token itself is never stored).
+class AccountAuth {
+  final List<AccountVerifier> verifiers;
+  final DateTime Function() _now;
+  final Duration positiveTtl;
+  final Duration negativeTtl;
+  final Map<String, _Entry> _cache = {};
+
+  AccountAuth(this.verifiers, {DateTime Function()? now, this.positiveTtl = const Duration(minutes: 5), this.negativeTtl = const Duration(seconds: 30)})
+      : _now = now ?? DateTime.now;
+
+  bool get enabled => verifiers.isNotEmpty;
+
+  /// Reads ACCOUNT_SUPABASE_URL / ACCOUNT_SUPABASE_ANON_KEY / ACCOUNT_GUPTIK_URL. Unset = that backend is off.
+  factory AccountAuth.fromEnv() {
+    final env = Platform.environment;
+    final vs = <AccountVerifier>[];
+    final sb = env['ACCOUNT_SUPABASE_URL'] ?? '';
+    if (sb.startsWith('https://')) {
+      vs.add(SupabaseAccountVerifier(baseUrl: sb, anonKey: env['ACCOUNT_SUPABASE_ANON_KEY'] ?? ''));
+    }
+    final gt = env['ACCOUNT_GUPTIK_URL'] ?? '';
+    if (gt.startsWith('https://')) vs.add(GuptikAccountVerifier(baseUrl: gt));
+    return AccountAuth(vs);
+  }
+
+  Future<AccountIdentity?> verify(String token) async {
+    if (!enabled || token.isEmpty || token.length > 4096) return null;
+    final key = sha256.convert(utf8.encode(token)).toString();
+    final c = _cache[key];
+    if (c != null && _now().isBefore(c.until)) return c.who;
+    AccountIdentity? who;
+    for (final v in verifiers) {
+      if (!v.accepts(token)) continue;
+      who = await v.verify(token);
+      break;
+    }
+    var until = _now().add(who == null ? negativeTtl : positiveTtl);
+    final exp = who?.expires;
+    if (exp != null && exp.isBefore(until)) until = exp;
+    if (_cache.length >= 5000) {
+      _cache.removeWhere((_, e) => !_now().isBefore(e.until));
+      if (_cache.length >= 5000) _cache.clear();
+    }
+    _cache[key] = _Entry(who, until);
+    return who;
+  }
+}
+
+/// Fixed-window-per-minute style limiter (sliding log), keyed by user id or IP.
+class RateLimiter {
+  final int perMinute;
+  final DateTime Function() _now;
+  final Map<String, List<DateTime>> _log = {};
+  RateLimiter(this.perMinute, {DateTime Function()? now}) : _now = now ?? DateTime.now;
+
+  bool allow(String key) {
+    final now = _now();
+    final l = _log.putIfAbsent(key, () => []);
+    l.removeWhere((t) => now.difference(t) > const Duration(minutes: 1));
+    if (l.length >= perMinute) return false;
+    l.add(now);
+    if (_log.length > 10000) _log.removeWhere((_, v) => v.isEmpty);
+    return true;
+  }
 }
 ''';
