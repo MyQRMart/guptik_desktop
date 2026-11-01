@@ -957,7 +957,8 @@ void main() async {
         "provider": (dbConfig['provider']?.isNotEmpty == true) ? dbConfig['provider'] : currentAiProvider,
         "endpoint_url": (dbConfig['endpoint_url']?.isNotEmpty == true) ? dbConfig['endpoint_url'] : currentAiEndpointUrl,
         "model_name": (dbConfig['model_name']?.isNotEmpty == true) ? dbConfig['model_name'] : currentAiModelName,
-        "api_key": (dbConfig['api_key']?.isNotEmpty == true) ? dbConfig['api_key'] : currentAiApiKey,
+        // The key never leaves the node; clients only learn whether one is set.
+        "has_api_key": (dbConfig['api_key']?.isNotEmpty == true) || currentAiApiKey.isNotEmpty,
       };
 
       return Response.ok(
@@ -1038,6 +1039,117 @@ void main() async {
     }
     return db;
   }
+
+  // 🚀 POST: Agent chat. The node calls the model; devices never see the key.
+  // Body: {"messages":[{"role":"user","content":"..."}], "model"?: "..."}
+  // Response: SSE lines `data: {"delta":"..."}` ... `data: [DONE]` (errors: `data: {"error":"..."}`)
+  router.post('/api/agent/chat', (Request req) async {
+    Map body;
+    try {
+      body = jsonDecode(await req.readAsString()) as Map;
+    } catch (_) {
+      return Response.badRequest(body: 'invalid json');
+    }
+    final rawMessages = body['messages'];
+    if (rawMessages is! List || rawMessages.isEmpty) return Response.badRequest(body: 'messages required');
+    final messages = <Map<String, String>>[];
+    for (final m in rawMessages.take(200)) {
+      if (m is! Map) continue;
+      final role = (m['role'] ?? '').toString();
+      if (!const {'system', 'user', 'assistant'}.contains(role)) continue;
+      messages.add({'role': role, 'content': (m['content'] ?? '').toString()});
+    }
+    if (messages.isEmpty) return Response.badRequest(body: 'messages required');
+
+    final db = await _readAiConfig();
+    final provider = (db['provider']?.isNotEmpty == true) ? db['provider']! : currentAiProvider;
+    var endpoint = (db['endpoint_url']?.isNotEmpty == true) ? db['endpoint_url']! : currentAiEndpointUrl;
+    final requested = (body['model'] ?? '').toString().trim();
+    final model = requested.isNotEmpty ? requested : ((db['model_name']?.isNotEmpty == true) ? db['model_name']! : currentAiModelName);
+    var key = (db['api_key']?.isNotEmpty == true) ? db['api_key']! : currentAiApiKey;
+    key = key.replaceAll(RegExp(r'\s'), '').trim();
+    if (key.toLowerCase().startsWith('bearer')) key = key.substring(6).trim();
+    endpoint = endpoint.replaceAll('localhost', 'host.docker.internal').replaceAll('127.0.0.1', 'host.docker.internal');
+    if (endpoint.startsWith('http://') && !endpoint.contains('host.docker.internal') && !endpoint.contains('ollama')) {
+      endpoint = endpoint.replaceFirst('http://', 'https://');
+    }
+
+    final isAnthropic = provider == 'Anthropic' || endpoint.contains('anthropic.com');
+    final isOllamaNative = endpoint.contains('/api/chat') && !endpoint.contains('/v1/');
+
+    final headers = <String, String>{'Content-Type': 'application/json'};
+    if (provider == 'OpenRouter') {
+      headers['HTTP-Referer'] = 'https://guptik.com';
+      headers['X-Title'] = 'Guptik Node';
+    }
+    Map<String, dynamic> payload;
+    if (isAnthropic) {
+      final system = messages.where((m) => m['role'] == 'system').map((m) => m['content']).join('\n\n');
+      payload = {
+        'model': model,
+        'max_tokens': 4096,
+        'stream': true,
+        'messages': messages.where((m) => m['role'] != 'system').toList(),
+        if (system.isNotEmpty) 'system': system,
+      };
+      if (key.isNotEmpty) headers['x-api-key'] = key;
+      headers['anthropic-version'] = '2023-06-01';
+    } else {
+      payload = {'model': model, 'messages': messages, 'stream': true};
+      if (key.isNotEmpty) headers['Authorization'] = 'Bearer $key';
+    }
+
+    final out = StreamController<List<int>>();
+    void emit(Map<String, dynamic> obj) => out.add(utf8.encode('data: ${jsonEncode(obj)}\n\n'));
+
+    () async {
+      final client = http.Client();
+      try {
+        final upstream = http.Request('POST', Uri.parse(endpoint))
+          ..headers.addAll(headers)
+          ..body = jsonEncode(payload);
+        final res = await client.send(upstream).timeout(const Duration(seconds: 60));
+        if (res.statusCode != 200) {
+          final err = await res.stream.bytesToString();
+          emit({'error': 'Provider returned ${res.statusCode}: ${err.length > 500 ? err.substring(0, 500) : err}'});
+          return;
+        }
+        await for (final raw in res.stream.transform(utf8.decoder).transform(const LineSplitter())) {
+          final line = raw.trim();
+          if (line.isEmpty || line.startsWith(':') || line.startsWith('event:')) continue;
+          var data = line;
+          if (data.startsWith('data:')) data = data.substring(5).trim();
+          else if (!isOllamaNative) continue;
+          if (data == '[DONE]') break;
+          try {
+            final j = jsonDecode(data);
+            String? delta;
+            if (j is Map && j['choices'] is List && (j['choices'] as List).isNotEmpty) {
+              delta = j['choices'][0]['delta']?['content']?.toString();
+            } else if (j is Map && j['type'] == 'content_block_delta') {
+              delta = j['delta']?['text']?.toString();
+            } else if (j is Map && j['message'] is Map) {
+              delta = j['message']['content']?.toString();
+            }
+            if (delta != null && delta.isNotEmpty) emit({'delta': delta});
+            if (j is Map && j['done'] == true) break;
+          } catch (_) {}
+        }
+      } catch (e) {
+        emit({'error': 'Could not reach the AI provider: $e'});
+      } finally {
+        out.add(utf8.encode('data: [DONE]\n\n'));
+        client.close();
+        await out.close();
+      }
+    }();
+
+    return Response.ok(out.stream, headers: {
+      'Content-Type': 'text/event-stream',
+      'Cache-Control': 'no-cache',
+      'X-Accel-Buffering': 'no',
+    }, context: {'shelf.io.buffer_output': false});
+  });
 
   router.get('/api/social-ai', (Request req) async {
     try {
