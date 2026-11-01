@@ -9,6 +9,7 @@ import 'package:shared_preferences/shared_preferences.dart';
 import 'screens/auth/boot_screen.dart';
 import 'package:video_player_win/video_player_win.dart';
 import 'theme/app_chrome.dart';
+import 'services/external/account_config.dart';
 import 'widgets/window_header.dart';
 
 
@@ -43,8 +44,8 @@ void main() async {
   
   // This must happen before any screen tries to access the database.
   await Supabase.initialize(
-    url: 'https://aqmcriergkczfkkdgkzc.supabase.co',
-    anonKey:'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImFxbWNyaWVyZ2tjemZra2Rna3pjIiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODI1MzU1NTUsImV4cCI6MjA5ODExMTU1NX0.GTFeWOWlfPBpQabdhwNhR0TGFg3oLzf4AOGkBbs2lP0',
+    url: kAccountSupabaseUrl,
+    anonKey:kAccountSupabaseAnonKey,
 
     // url: 'https://general-base.myqrmart.com',
     // anonKey: 'eyJhbGciOiAiSFMyNTYiLCAidHlwIjogIkpXVCJ9.eyJyb2xlIjogImFub24iLCAiaXNzIjogInN1cGFiYXNlIiwgImlhdCI6IDE3ODMyMDM3OTAsICJleHAiOiAyMDk4NTYzNzkwfQ.NMI3uwDrk6jC_mf334CKM7vIEr2GrA9EqIBiKzp6cfo',

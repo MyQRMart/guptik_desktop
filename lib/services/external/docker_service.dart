@@ -4,6 +4,7 @@ import 'package:flutter_secure_storage/flutter_secure_storage.dart';
 import '../updates/guptik_version.dart';
 import 'gateway_sources.dart';
 import 'db_secrets.dart';
+import 'account_config.dart';
 import '../node/node_secrets.dart';
 
 class DockerService {
@@ -248,6 +249,9 @@ services:
       - GATEWAY_AUTH=\${GATEWAY_AUTH:-audit}
       - OWNER_TOKEN_SHA256=\${OWNER_TOKEN_SHA256:-}
       - VIEWER_SIGNING_KEY=\${VIEWER_SIGNING_KEY:-}
+      - ACCOUNT_SUPABASE_URL=${kAccountSupabaseUrl}
+      - ACCOUNT_SUPABASE_ANON_KEY=${kAccountSupabaseAnonKey}
+      - ACCOUNT_GUPTIK_URL=${kAccountGuptikUrl}
     depends_on:
       - db
 
@@ -446,7 +450,7 @@ Future<void> _generateGatewayFiles(String publicUrl) async {
     await pubspec.writeAsString('''
 name: guptik_gateway
 environment: {sdk: '>=3.0.0 <4.0.0'}
-dependencies: {shelf: ^1.4.0, shelf_router: ^1.1.0, http: ^1.1.0, mime: ^1.0.4, postgres: ^3.4.0, uuid: ^4.3.3, crypto: ^3.0.3}
+dependencies: {shelf: ^1.4.0, shelf_router: ^1.1.0, http: ^1.1.0, mime: ^1.0.4, postgres: ^3.4.0, uuid: ^4.3.3, crypto: ^3.0.3, pointycastle: ^3.9.1}
 ''');
 
     final dockerfile = File('$_vaultPath/gateway/Dockerfile');
@@ -457,6 +461,7 @@ COPY --from=mwader/static-ffmpeg:6.1.1 /ffmpeg /usr/local/bin/
 ''');
 
     await File('$_vaultPath/gateway/gateway_auth.dart').writeAsString(kGatewayAuthDart);
+    await File('$_vaultPath/gateway/gateway_account.dart').writeAsString(kGatewayAccountDart);
 
     final server = File('$_vaultPath/gateway/server.dart');
 
@@ -3100,7 +3105,7 @@ void main() async {
           FROM mp_videos v
           LEFT JOIN mp_channels c ON v.channel_id = c.channel_id
           WHERE v.channel_id = @cid AND v.is_deleted = false
-          ${principalOf(req)?.role == Role.viewer ? "AND COALESCE(v.visibility, 'public') = 'public'" : ""}
+          ${(principalOf(req)?.isScoped ?? false) ? "AND COALESCE(v.visibility, 'public') = 'public'" : ""}
           ORDER BY v.upload_timestamp DESC
         """),
         parameters: {'cid': channelId}

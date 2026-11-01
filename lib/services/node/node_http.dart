@@ -1,18 +1,34 @@
 import 'dart:async';
 import 'dart:convert';
 import 'package:http/http.dart' as http;
+import '../admin/admin_shim.dart';
 import 'node_secrets.dart';
 
 /// HTTP client for talking to node gateways.
 ///  * requests to THIS PC's own gateway (localhost:55000) carry the owner token
 ///  * read-only player requests to other people's nodes carry a short-lived anonymous
 ///    viewer token (fetched from that node's POST /viewer/token and cached)
+///  * like / comment / subscribe calls (and comment reads) to other people's nodes carry the signed-in
+///    user's GupTik account token, so the node can verify who is acting. Only those routes get it,
+///    and the paired/owner token is never sent to another node.
 ///  * everything else is sent untouched; the owner token never leaves localhost
 class NodeHttp extends http.BaseClient {
   NodeHttp([http.Client? inner]) : _inner = inner ?? http.Client();
   final http.Client _inner;
 
-  static final _viewerRead = RegExp(r'^/(player/video/(stream|thumbnail|stickers|stats)|watch|channel/(profile|videos))/[^/]+$');
+  static final _viewerRead = RegExp(
+      r'^/(player/video/(stream|thumbnail|stickers|stats|comments)|watch|channel/(profile|videos))/[^/]+$|^/player/video/comments/[^/]+/replies/[^/]+$');
+  static final _socialWrite = RegExp(
+      r'^/(player/video/(like|comment|view)|player/video/comment/[^/]+(/react|/report)?|channel/subscribe/toggle)$');
+  static final _socialGet = RegExp(
+      r'^/(player/video/comments/[^/]+(/replies/[^/]+)?|channel/subscribe/status/[^/]+/[^/]+)$');
+
+  /// Routes where another node needs to know which signed-in user is acting.
+  static bool isSocial(String method, String path) =>
+      method == 'GET' ? _socialGet.hasMatch(path) : _socialWrite.hasMatch(path);
+
+  /// The signed-in user's account token (overridable for tests).
+  static Future<String?> Function() accountToken = AdminHttp.loadToken;
   static final Map<String, _ViewerToken> _viewer = {};
   static final Map<String, DateTime> _cooldown = {};
 
@@ -62,6 +78,14 @@ class NodeHttp extends http.BaseClient {
       if (isOwnNode(request.url)) {
         final t = NodeSecrets.cachedOwnerToken ?? await NodeSecrets.load();
         if (t != null) request.headers['Authorization'] = 'Bearer $t';
+      } else if (isSocial(request.method, request.url.path)) {
+        final a = await accountToken();
+        if (a != null && a.isNotEmpty) {
+          request.headers['Authorization'] = 'Bearer $a';
+        } else if (request.method == 'GET' && _viewerRead.hasMatch(request.url.path)) {
+          final t = await viewerToken(request.url);
+          if (t != null) request.headers['Authorization'] = 'Bearer $t';
+        }
       } else if (request.method == 'GET' && _viewerRead.hasMatch(request.url.path)) {
         final t = await viewerToken(request.url);
         if (t != null) request.headers['Authorization'] = 'Bearer $t';
